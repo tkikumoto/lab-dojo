@@ -3,7 +3,7 @@
 // passes, not just the one the exercise author had in mind.
 import { remote } from "./remote.mjs";
 import { getBgpSummary, getInterfaces, getOspfNeighbors, getRoutes, parsePing } from "./drivers.mjs";
-import { nodeByName, osIfName, toEth, usesBgp, usesOspf } from "./topology.mjs";
+import { loopbackLabel, nodeByName, osIfName, toEth, usesBgp, usesOspf } from "./topology.mjs";
 
 async function settle(promise) {
   try {
@@ -125,7 +125,7 @@ function evaluateReachability(topology, reach) {
       if (src === dst) continue;
       checks.push(check(
         `reach:${src.name}:${dst.name}`,
-        `${src.name} (${src.loopback}) can ping ${dst.name} (${dst.loopback})`,
+        `ping from ${loopbackLabel(src)} to ${loopbackLabel(dst)} succeeds`,
         reach[`${src.name}>${dst.loopback}`] === true,
         reach[`${src.name}:error`] ?? "ping from loopback failed",
       ));
@@ -145,7 +145,7 @@ export async function runExtraCheck(lab, topology, spec) {
     const rttOk = spec.max_avg_rtt_ms == null || (result.rtt_ms?.avg ?? Infinity) <= spec.max_avg_rtt_ms;
     return check(
       `quality:${spec.from}:${spec.to}`,
-      `${spec.count} pings ${spec.from} -> ${spec.to} with <= ${spec.max_loss_percent ?? 0}% loss`
+      `${spec.count} pings from ${loopbackLabel(src)} to ${loopbackLabel(dst)} with <= ${spec.max_loss_percent ?? 0}% loss`
         + (spec.max_avg_rtt_ms != null ? ` and avg RTT <= ${spec.max_avg_rtt_ms} ms` : ""),
       lossOk && rttOk,
       `loss ${result.loss_percent}%, avg RTT ${result.rtt_ms?.avg ?? "n/a"} ms`,

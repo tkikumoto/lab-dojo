@@ -3,7 +3,7 @@
 // progressive hints, the solution, and any extra checks needed to prove it is
 // fixed when the generic health checks would not notice (e.g. packet loss).
 import { remote } from "./remote.mjs";
-import { nodeByName, osIfName, toEth, usesBgp, usesOspf } from "./topology.mjs";
+import { loopbackLabel, nodeByName, osIfName, toEth, usesBgp, usesOspf } from "./topology.mjs";
 
 function linkEnds(topology) {
   return topology.links.flatMap((link) => [[link.a, link.b], [link.b, link.a]].map(([self, other]) => ({
@@ -233,7 +233,7 @@ export const FAULTS = {
       return { node: p.node, target: target.name, prefix: `${target.loopback}/32` };
     },
     actions: (t, p) => [{ op: "configure", node: p.node, lines: [`ip route ${p.prefix} Null0`] }],
-    ticket: (t, p) => `Traffic from ${p.node} to ${p.target} is failing. Other destinations seem fine and no routing alarms were raised.`,
+    ticket: (t, p) => `Traffic from ${p.node} to ${loopbackLabel(nodeByName(t, p.target))} is failing. Other destinations seem fine and no routing alarms were raised.`,
     hints: (t, p) => [
       "Routing protocols look healthy. Look at what the routing table actually selects for the failing destination.",
       `Check 'show ip route ${p.prefix.replace("/32", "")}' on ${p.node}. Which protocol wins, and why?`,
@@ -335,7 +335,7 @@ export const FAULTS = {
     resolve: (t, p) => ({ ...resolveLinkEnd(t, p), loss_percent: p.loss_percent ?? 25 }),
     actions: (t, p) => [{ op: "netem", node: p.node, interface: p.interface, delay_ms: 0, jitter_ms: 0, loss_percent: p.loss_percent }],
     checks: (t, p) => [{ type: "ping_quality", from: p.node, to: p.peer, count: 20, max_loss_percent: 0 }],
-    ticket: (t, p) => `Users report intermittent timeouts for traffic between ${p.node} and ${p.peer}. Routing has been stable all day.`,
+    ticket: (t, p) => `Users report intermittent timeouts for traffic between ${loopbackLabel(nodeByName(t, p.node))} and ${loopbackLabel(nodeByName(t, p.peer))}. Routing has been stable all day.`,
     hints: (t, p) => [
       "Routing is stable. The problem is the quality of the path, not the path itself. Try longer pings (count 20).",
       "Ping hop by hop with large counts to find the segment where loss starts.",
@@ -353,7 +353,7 @@ export const FAULTS = {
     resolve: (t, p) => ({ ...resolveLinkEnd(t, p), delay_ms: p.delay_ms ?? 200 }),
     actions: (t, p) => [{ op: "netem", node: p.node, interface: p.interface, delay_ms: p.delay_ms, jitter_ms: 10, loss_percent: 0 }],
     checks: (t, p) => [{ type: "ping_quality", from: p.node, to: p.peer, count: 5, max_loss_percent: 20, max_avg_rtt_ms: 50 }],
-    ticket: (t, p) => `Applications between ${p.node} and ${p.peer} have become very slow. Nothing is down.`,
+    ticket: (t, p) => `Applications between ${loopbackLabel(nodeByName(t, p.node))} and ${loopbackLabel(nodeByName(t, p.peer))} have become very slow. Nothing is down.`,
     hints: (t, p) => [
       "Everything is reachable. Measure round-trip times between the routers involved.",
       "Use traceroute and per-hop pings to find which link adds the latency.",

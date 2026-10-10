@@ -38,6 +38,11 @@ export function loopbackIfName(kind) {
   return kind === "ceos" ? "Loopback0" : "lo";
 }
 
+/** "r1 (lo 10.255.0.1)": names the exact address a check or ticket is about, since a node has several. */
+export function loopbackLabel(node) {
+  return `${node.name} (${loopbackIfName(node.kind)} ${node.loopback})`;
+}
+
 function templateNodes(input) {
   const kind = input.kind ?? "frr";
   const named = (prefix, count) => Array.from({ length: count }, (_, i) => ({ name: `${prefix}${i + 1}`, kind }));
