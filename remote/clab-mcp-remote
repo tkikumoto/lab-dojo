@@ -1,0 +1,554 @@
+#!/usr/bin/env bash
+# Allowlisted Containerlab gateway for the MCP server.
+#
+# The Mac-side MCP server reaches this VM only as
+#   ssh <vm> /usr/local/libexec/clab-mcp-remote <action> [args...]
+# so this script is the trust boundary. It re-validates every name, address and
+# CLI line even though the Node server validates them first. It never accepts raw
+# Containerlab YAML (it renders topologies itself from a node/link list), never
+# accepts an FRR `daemons` file (FRR's init script sources it as shell), and
+# never lets a router CLI request reach a Linux shell: Containerlab nodes run
+# privileged, so a shell inside a router is a shell on this VM.
+set -euo pipefail
+umask 022
+export LC_ALL=C
+
+STATE_ROOT=/var/lib/containerlab-mcp
+LABS="$STATE_ROOT/labs"
+FRR_IMAGE=quay.io/frrouting/frr:10.7.1
+CEOS_IMAGE=ceos:4.36.2F
+LINK_MTU=1500
+MAX_LABS=6
+MAX_NODES=16
+MAX_CEOS_PER_LAB=6
+MAX_CEOS_RUNNING=8
+MAX_LINKS=48
+MAX_SPEC_BYTES=16384
+MAX_CONFIG_BYTES=65536
+MAX_CONFIG_LINES=600
+MAX_SESSION_LINES=200
+MAX_META_BYTES=262144
+
+# First words that can leave configuration mode, run exec-mode commands, write
+# files or start a shell on FRR (vtysh) or Arista EOS. Both CLIs accept
+# abbreviations, so a word is refused when it equals one of these or is a prefix
+# of one ("ev" -> event-handler, "st" -> start-shell, "en" -> end/enable).
+DENY_FIRST_WORDS=(
+  do end exit quit start-shell write copy configure enable disable terminal run
+  bash event-handler alias schedule daemon extension python python-shell
+  zerotouch reload boot send delete rename tcpdump more ssh telnet connect install
+)
+# Saved configuration files legitimately use these to close a section.
+STARTUP_MODE_EXITS=(end exit quit)
+DENY_SUBSTRINGS=(bash shell python sudo /bin/ /usr/ /sbin/)
+
+die() {
+  printf 'clab-mcp-remote: %s\n' "$*" >&2
+  exit 2
+}
+
+valid_lab_name() { [[ ${1:-} =~ ^[a-z][a-z0-9-]{0,19}$ ]]; }
+valid_node_name() { [[ ${1:-} =~ ^[a-z][a-z0-9-]{0,14}$ ]]; }
+# Data-plane interfaces only. eth0 is the management interface.
+valid_iface() { [[ ${1:-} =~ ^eth[1-9][0-9]?$ ]]; }
+valid_uint() { [[ ${1:-} =~ ^[0-9]{1,6}$ ]] && ((10#$1 >= $2 && 10#$1 <= $3)); }
+
+valid_ip_literal() {
+  local value=${1:-} octet
+  local -a octets
+  if [[ $value == *.* && $value != *:* ]]; then
+    IFS=. read -r -a octets <<< "$value"
+    ((${#octets[@]} == 4)) || return 1
+    for octet in "${octets[@]}"; do
+      [[ $octet =~ ^[0-9]{1,3}$ ]] || return 1
+      ((10#$octet <= 255)) || return 1
+    done
+    return 0
+  fi
+  # IPv6-like characters only, never a hostname or option. ping performs the
+  # final IPv6 syntax validation.
+  [[ $value == *:* && $value =~ ^[0-9A-Fa-f:.]+$ ]]
+}
+
+read_stdin() {
+  local limit=$1 data
+  data=$(head -c $((limit + 1)))
+  ((${#data} <= limit)) || die "input larger than $limit bytes"
+  printf '%s' "$data"
+}
+
+require_lab() {
+  valid_lab_name "${1:-}" || die 'invalid lab name'
+  LAB=$1
+  LAB_DIR="$LABS/$LAB"
+  TOPO="$LAB_DIR/$LAB.clab.yml"
+  [[ -f $TOPO ]] || die "lab $LAB is not defined"
+}
+
+require_node() {
+  valid_node_name "${1:-}" || die 'invalid node name'
+  [[ -f $LAB_DIR/nodes/$1 ]] || die "node $1 is not part of lab $LAB"
+  NODE=$1
+  KIND=$(<"$LAB_DIR/nodes/$NODE")
+  CONTAINER="clab-$LAB-$NODE"
+  [[ $KIND == frr || $KIND == ceos ]] || die 'corrupt node record'
+}
+
+require_running() {
+  local state
+  state=$(docker inspect --format '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)
+  [[ $state == true ]] || die "node $NODE is not running (deploy lab $LAB first)"
+}
+
+require_node_iface() {
+  valid_iface "${1:-}" || die 'invalid interface (use eth1, eth2, ...)'
+  grep -qx -- "$1" "$LAB_DIR/ifaces/$NODE" || die "$1 is not a link interface of $NODE"
+}
+
+lab_running() {
+  [[ -n $(docker ps -q --filter "label=containerlab=$LAB") ]]
+}
+
+cli() {
+  case $KIND in
+    frr) docker exec "$CONTAINER" vtysh -c "$1" ;;
+    ceos) docker exec "$CONTAINER" Cli -p 15 -c "$1" ;;
+  esac
+}
+
+# Validates one configuration line. Mode "session" is used for live changes and
+# also refuses leaving configuration mode; mode "startup" is for saved files.
+check_line() {
+  local line=$1 mode=$2 lower first word
+  ((${#line} <= 240)) || die 'configuration line longer than 240 characters'
+  [[ $line =~ ^[[:print:]]*$ ]] || die 'configuration lines must be printable ASCII'
+  case $line in
+    *'|'* | *'>'* | *'<'* | *'`'* | *'$('* | *';'*) die "forbidden character in line: $line" ;;
+  esac
+  lower=${line,,}
+  for word in "${DENY_SUBSTRINGS[@]}"; do
+    [[ $lower != *"$word"* ]] || die "refused line (contains '$word'): $line"
+  done
+  read -r first _ <<< "$lower" || true
+  [[ -n ${first:-} && $first != '!'* ]] || return 0
+  if [[ $mode == startup ]]; then
+    for word in "${STARTUP_MODE_EXITS[@]}"; do
+      [[ $first != "$word" ]] || return 0
+    done
+  fi
+  for word in "${DENY_FIRST_WORDS[@]}"; do
+    [[ $word != "$first"* ]] || die "refused line (first word '$first' is not allowed here): $line"
+  done
+}
+
+json_string_list() {
+  local first=1 item
+  printf '['
+  for item in "$@"; do
+    ((first)) || printf ','
+    first=0
+    printf '"%s"' "$item"
+  done
+  printf ']'
+}
+
+# ---------------------------------------------------------------- lab actions
+
+list_labs() {
+  local dir lab nodes running first=1
+  printf '['
+  if [[ -d $LABS ]]; then
+    for dir in "$LABS"/*/; do
+      [[ -d $dir ]] || continue
+      lab=$(basename "$dir")
+      valid_lab_name "$lab" && [[ -f $dir/$lab.clab.yml ]] || continue
+      nodes=$(find "$dir/nodes" -mindepth 1 -maxdepth 1 -type f | wc -l)
+      running=$(docker ps -q --filter "label=containerlab=$lab" | wc -l)
+      ((first)) || printf ','
+      first=0
+      printf '{"name":"%s","nodes":%d,"running_containers":%d}' "$lab" "$nodes" "$running"
+    done
+  fi
+  printf ']\n'
+}
+
+create_lab() {
+  valid_lab_name "${1:-}" || die 'invalid lab name'
+  local lab=$1 dir="$LABS/$1" tmp verb a b c d extra node count ceos=0 spec
+  local -A kinds=() used=()
+  local -a order=() links=()
+  [[ -d $LABS ]] || die "$LABS is missing; run install-remote.sh"
+  [[ ! -e $dir ]] || die "lab $lab already exists"
+  count=$(find "$LABS" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | wc -l)
+  ((count < MAX_LABS)) || die "at most $MAX_LABS labs may be defined; delete one first"
+  spec=$(read_stdin "$MAX_SPEC_BYTES")
+  while read -r verb a b c d extra; do
+    [[ -n ${verb:-} ]] || continue
+    [[ -z ${extra:-} ]] || die 'malformed spec line'
+    case $verb in
+      node)
+        valid_node_name "$a" || die "invalid node name: $a"
+        [[ -z ${kinds[$a]:-} ]] || die "duplicate node: $a"
+        [[ $b == frr || $b == ceos ]] || die "unsupported node kind: $b"
+        [[ -z ${c:-} ]] || die 'malformed node line'
+        kinds[$a]=$b
+        order+=("$a")
+        [[ $b != ceos ]] || ceos=$((ceos + 1))
+        ;;
+      link)
+        [[ -n ${kinds[$a]:-} && -n ${kinds[$c]:-} ]] || die 'link references an unknown node'
+        [[ $a != "$c" ]] || die 'a link cannot connect a node to itself'
+        valid_iface "$b" && valid_iface "$d" || die 'invalid link interface'
+        [[ -z ${used[$a:$b]:-} && -z ${used[$c:$d]:-} ]] || die "interface used twice: $a:$b or $c:$d"
+        used[$a:$b]=1
+        used[$c:$d]=1
+        links+=("$a $b $c $d")
+        ;;
+      *) die "unknown spec keyword: $verb" ;;
+    esac
+  done <<< "$spec"
+  ((${#order[@]} >= 1 && ${#order[@]} <= MAX_NODES)) || die "a lab needs 1-$MAX_NODES nodes"
+  ((ceos <= MAX_CEOS_PER_LAB)) || die "at most $MAX_CEOS_PER_LAB cEOS nodes per lab"
+  ((${#links[@]} <= MAX_LINKS)) || die "at most $MAX_LINKS links per lab"
+
+  tmp="$LABS/.tmp-$lab-$$"
+  rm -rf "$tmp"
+  mkdir -p "$tmp/nodes" "$tmp/ifaces" "$tmp/meta"
+  {
+    printf 'name: %s\ntopology:\n  nodes:\n' "$lab"
+    for node in "${order[@]}"; do
+      mkdir -p "$tmp/configs/$node"
+      printf '%s\n' "${kinds[$node]}" > "$tmp/nodes/$node"
+      : > "$tmp/ifaces/$node"
+      if [[ ${kinds[$node]} == frr ]]; then
+        printf 'zebra=yes\nospfd=yes\nbgpd=yes\nstaticd=yes\nvtysh_enable=yes\n' > "$tmp/configs/$node/daemons"
+        printf 'zebra_options="  -A 127.0.0.1 -s 90000000"\nospfd_options="  -A 127.0.0.1"\n' >> "$tmp/configs/$node/daemons"
+        printf 'bgpd_options="  -A 127.0.0.1"\nstaticd_options="  -A 127.0.0.1"\n' >> "$tmp/configs/$node/daemons"
+        printf 'service integrated-vtysh-config\n' > "$tmp/configs/$node/vtysh.conf"
+        printf 'frr defaults traditional\nhostname %s\nservice integrated-vtysh-config\n' "$node" > "$tmp/configs/$node/frr.conf"
+        printf '    %s:\n      kind: linux\n      image: %s\n      binds:\n' "$node" "$FRR_IMAGE"
+        printf '        - configs/%s/daemons:/etc/frr/daemons\n' "$node"
+        printf '        - configs/%s/frr.conf:/etc/frr/frr.conf\n' "$node"
+        printf '        - configs/%s/vtysh.conf:/etc/frr/vtysh.conf\n' "$node"
+      else
+        printf 'hostname %s\n' "$node" > "$tmp/configs/$node/startup.partial.cfg"
+        printf '    %s:\n      kind: arista_ceos\n      image: %s\n' "$node" "$CEOS_IMAGE"
+        printf '      startup-config: configs/%s/startup.partial.cfg\n' "$node"
+      fi
+    done
+    if ((${#links[@]})); then
+      printf '  links:\n'
+      for spec in "${links[@]}"; do
+        read -r a b c d <<< "$spec"
+        printf '%s\n' "$b" >> "$tmp/ifaces/$a"
+        printf '%s\n' "$d" >> "$tmp/ifaces/$c"
+        printf '    - endpoints: ["%s:%s", "%s:%s"]\n      mtu: %d\n' "$a" "$b" "$c" "$d" "$LINK_MTU"
+      done
+    fi
+  } > "$tmp/$lab.clab.yml"
+  mv "$tmp" "$dir"
+  printf 'created lab %s with %d nodes and %d links\n' "$lab" "${#order[@]}" "${#links[@]}"
+}
+
+put_config() {
+  require_lab "${1:-}"
+  require_node "${2:-}"
+  local input line lines=0 target
+  ! lab_running || die "lab $LAB is deployed; destroy it before replacing startup configuration"
+  input=$(read_stdin "$MAX_CONFIG_BYTES")
+  while IFS= read -r line; do
+    line=${line%$'\r'}
+    lines=$((lines + 1))
+    check_line "$line" startup
+  done <<< "$input"
+  ((lines <= MAX_CONFIG_LINES)) || die "configuration longer than $MAX_CONFIG_LINES lines"
+  case $KIND in
+    frr) target="$LAB_DIR/configs/$NODE/frr.conf" ;;
+    ceos) target="$LAB_DIR/configs/$NODE/startup.partial.cfg" ;;
+  esac
+  printf '%s\n' "$input" > "$target.tmp"
+  mv "$target.tmp" "$target"
+  printf 'stored startup configuration for %s (%d lines)\n' "$NODE" "$lines"
+}
+
+delete_lab() {
+  require_lab "${1:-}"
+  ! lab_running || die "lab $LAB is deployed; destroy it first"
+  rm -rf -- "$LAB_DIR"
+  printf 'deleted lab definition %s\n' "$LAB"
+}
+
+deploy() {
+  require_lab "${1:-}"
+  local wanted running
+  ! lab_running || die "lab $LAB is already deployed"
+  wanted=$(grep -lx ceos "$LAB_DIR"/nodes/* 2>/dev/null | wc -l || true)
+  running=$(docker ps -q --filter "ancestor=$CEOS_IMAGE" | wc -l)
+  ((wanted + running <= MAX_CEOS_RUNNING)) ||
+    die "deploying would run $((wanted + running)) cEOS nodes; the VM limit is $MAX_CEOS_RUNNING"
+  cd "$LAB_DIR"
+  clab deploy -t "$TOPO"
+}
+
+destroy() {
+  require_lab "${1:-}"
+  cd "$LAB_DIR"
+  clab destroy -t "$TOPO" --cleanup
+}
+
+inspect_lab() {
+  require_lab "${1:-}"
+  local ids
+  ids=$(docker ps -aq --filter "label=containerlab=$LAB")
+  [[ -n $ids ]] || return 0
+  # Tab-separated: node, state, start time, management IPv4.
+  # shellcheck disable=SC2086 # one container id per word
+  docker inspect --format \
+    '{{index .Config.Labels "clab-node-name"}}	{{.State.Status}}	{{.State.StartedAt}}	{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+    $ids
+}
+
+meta_key() {
+  [[ ${1:-} == topology || ${1:-} == state ]] || die 'meta key must be topology or state'
+}
+
+meta_get() {
+  require_lab "${1:-}"
+  meta_key "${2:-}"
+  [[ ! -f $LAB_DIR/meta/$2.json ]] || cat "$LAB_DIR/meta/$2.json"
+}
+
+meta_put() {
+  require_lab "${1:-}"
+  meta_key "${2:-}"
+  local input
+  input=$(read_stdin "$MAX_META_BYTES")
+  printf '%s\n' "$input" > "$LAB_DIR/meta/$2.json.tmp"
+  mv "$LAB_DIR/meta/$2.json.tmp" "$LAB_DIR/meta/$2.json"
+  printf 'ok\n'
+}
+
+# ------------------------------------------------------------- node actions
+
+ready() {
+  require_lab "${1:-}"
+  require_node "${2:-}"
+  require_running
+  if cli 'show running-config' 2>/dev/null | grep -qx "hostname $NODE"; then
+    printf 'ready\n'
+  else
+    printf 'booting\n'
+  fi
+}
+
+show() {
+  require_lab "${1:-}"
+  require_node "${2:-}"
+  local format=${3:-} command=${4:-}
+  local re='^show( [A-Za-z0-9./:_,=+-]+){0,16}$'
+  [[ $format == text || $format == json ]] || die 'format must be text or json'
+  ((${#command} <= 200)) || die 'command longer than 200 characters'
+  [[ $command =~ $re ]] ||
+    die 'only plain "show ..." commands are allowed (no pipes, redirects or special characters)'
+  require_running
+  case $KIND:$format in
+    frr:text) docker exec "$CONTAINER" vtysh -c "$command" ;;
+    frr:json) docker exec "$CONTAINER" vtysh -c "$command json" ;;
+    ceos:text) docker exec "$CONTAINER" Cli -p 15 -c "$command" ;;
+    ceos:json) docker exec "$CONTAINER" Cli -p 15 -c "$command | json" ;;
+  esac
+}
+
+configure() {
+  require_lab "${1:-}"
+  require_node "${2:-}"
+  local input line
+  local -a lines=() args=()
+  input=$(read_stdin "$MAX_CONFIG_BYTES")
+  while IFS= read -r line; do
+    line=${line%$'\r'}
+    [[ -n ${line//[[:space:]]/} ]] || continue
+    check_line "$line" session
+    lines+=("$line")
+  done <<< "$input"
+  ((${#lines[@]} >= 1)) || die 'no configuration lines given'
+  ((${#lines[@]} <= MAX_SESSION_LINES)) || die "at most $MAX_SESSION_LINES lines per change"
+  require_running
+  case $KIND in
+    frr)
+      args=(-c 'configure terminal')
+      for line in "${lines[@]}"; do args+=(-c "$line"); done
+      docker exec "$CONTAINER" vtysh "${args[@]}"
+      ;;
+    ceos)
+      # Each validated line is newline-free, so joining cannot inject commands.
+      docker exec "$CONTAINER" Cli -p 15 -c "$(printf 'configure\n'; printf '%s\n' "${lines[@]}"; printf 'end')"
+      ;;
+  esac
+}
+
+config_diff() {
+  require_lab "${1:-}"
+  require_node "${2:-}"
+  require_running
+  case $KIND in
+    # frr-reload's test mode prints the commands that would turn the running
+    # configuration back into the startup file, i.e. a semantic diff.
+    frr) docker exec "$CONTAINER" /usr/lib/frr/frr-reload.py --test /etc/frr/frr.conf 2>/dev/null |
+      sed -n '/^Lines To /,$p' ;;
+    ceos) docker exec "$CONTAINER" Cli -p 15 -c 'show running-config diffs' ;;
+  esac
+}
+
+restore_node() {
+  require_lab "${1:-}"
+  require_node "${2:-}"
+  require_running
+  local iface
+  case $KIND in
+    frr) docker exec "$CONTAINER" /usr/lib/frr/frr-reload.py --reload /etc/frr/frr.conf >/dev/null 2>&1 ||
+      die "frr-reload failed on $NODE" ;;
+    ceos) docker exec "$CONTAINER" Cli -p 15 -c 'configure replace flash:startup-config' ;;
+  esac
+  while IFS= read -r iface; do
+    [[ -n $iface ]] || continue
+    if [[ $KIND == frr ]]; then
+      docker exec "$CONTAINER" ip link set dev "$iface" mtu "$LINK_MTU" up
+    fi
+    docker exec "$CONTAINER" sh -c 'tc qdisc del dev "$1" root 2>/dev/null || true' _ "$iface" 2>/dev/null || true
+  done < "$LAB_DIR/ifaces/$NODE"
+  printf 'restored %s to its startup configuration, link state and link quality\n' "$NODE"
+}
+
+link_state() {
+  require_lab "${1:-}"
+  require_node "${2:-}"
+  require_node_iface "${3:-}"
+  [[ ${4:-} == up || ${4:-} == down ]] || die 'state must be up or down'
+  [[ $KIND == frr ]] || die 'kernel link state can only be changed on FRR nodes (cEOS re-asserts it)'
+  require_running
+  docker exec "$CONTAINER" ip link set dev "$3" "$4"
+  printf '%s %s is %s\n' "$NODE" "$3" "$4"
+}
+
+link_mtu() {
+  require_lab "${1:-}"
+  require_node "${2:-}"
+  require_node_iface "${3:-}"
+  valid_uint "${4:-}" 576 9000 || die 'mtu must be 576-9000'
+  [[ $KIND == frr ]] || die 'kernel MTU can only be changed on FRR nodes'
+  require_running
+  # Bounce the link so routing protocols renegotiate with the new MTU.
+  docker exec "$CONTAINER" ip link set dev "$3" down
+  docker exec "$CONTAINER" ip link set dev "$3" mtu "$4"
+  docker exec "$CONTAINER" ip link set dev "$3" up
+  printf '%s %s mtu is %s\n' "$NODE" "$3" "$4"
+}
+
+netem() {
+  require_lab "${1:-}"
+  require_node "${2:-}"
+  require_node_iface "${3:-}"
+  require_running
+  case ${4:-} in
+    set)
+      valid_uint "${5:-}" 0 5000 || die 'delay must be 0-5000 ms'
+      valid_uint "${6:-}" 0 1000 || die 'jitter must be 0-1000 ms'
+      valid_uint "${7:-}" 0 100 || die 'loss must be 0-100 percent'
+      clab tools netem set -n "$CONTAINER" -i "$3" --delay "${5}ms" --jitter "${6}ms" --loss "$7"
+      ;;
+    reset) clab tools netem reset -n "$CONTAINER" -i "$3" ;;
+    *) die 'netem mode must be set or reset' ;;
+  esac
+}
+
+# Hard-resets one BGP session. Used after repairs: FRR backs off for minutes
+# after repeated OPEN rejections, which would otherwise delay grading.
+bgp_clear() {
+  require_lab "${1:-}"
+  require_node "${2:-}"
+  valid_ip_literal "${3:-}" || die 'peer must be a literal IP address'
+  require_running
+  case $KIND in
+    frr) docker exec "$CONTAINER" vtysh -c "clear bgp $3" ;;
+    ceos) docker exec "$CONTAINER" Cli -p 15 -c "clear ip bgp $3" ;;
+  esac
+}
+
+ping_node() {
+  require_lab "${1:-}"
+  require_node "${2:-}"
+  valid_ip_literal "${3:-}" || die 'destination must be a literal IPv4 or IPv6 address'
+  valid_uint "${4:-}" 1 20 || die 'count must be 1-20'
+  local -a args=(-c "$4" -W 1 -i 0.2)
+  if [[ -n ${5:-} ]]; then
+    valid_ip_literal "$5" || die 'source must be a literal IP address'
+    args+=(-I "$5")
+  fi
+  require_running
+  # ping exits non-zero on loss; the caller parses the statistics instead.
+  docker exec "$CONTAINER" ping "${args[@]}" "$3" 2>&1 || true
+}
+
+ping_sweep() {
+  require_lab "${1:-}"
+  require_node "${2:-}"
+  valid_ip_literal "${3:-}" || die 'source must be a literal IP address'
+  local src=$3 dest
+  shift 3
+  (($# >= 1 && $# <= MAX_NODES)) || die "give 1-$MAX_NODES destinations"
+  for dest in "$@"; do
+    valid_ip_literal "$dest" || die "invalid destination: $dest"
+  done
+  require_running
+  for dest in "$@"; do
+    (
+      if docker exec "$CONTAINER" ping -c 2 -W 1 -i 0.2 -I "$src" "$dest" >/dev/null 2>&1; then
+        printf '%s ok\n' "$dest"
+      else
+        printf '%s fail\n' "$dest"
+      fi
+    ) &
+  done
+  wait
+}
+
+traceroute_node() {
+  require_lab "${1:-}"
+  require_node "${2:-}"
+  valid_ip_literal "${3:-}" || die 'destination must be a literal IPv4 or IPv6 address'
+  local -a args=(-n -w 1 -q 1 -m 15)
+  if [[ -n ${4:-} ]]; then
+    valid_ip_literal "$4" || die 'source must be a literal IP address'
+    args+=(-s "$4")
+  fi
+  require_running
+  docker exec "$CONTAINER" traceroute "${args[@]}" "$3" 2>&1 || true
+}
+
+action=${1:-}
+(($# > 0)) && shift
+case "$action" in
+  list-labs) (($# == 0)) || die 'invalid arguments'; list_labs ;;
+  create-lab) (($# == 1)) || die 'invalid arguments'; create_lab "$1" ;;
+  put-config) (($# == 2)) || die 'invalid arguments'; put_config "$1" "$2" ;;
+  delete-lab) (($# == 1)) || die 'invalid arguments'; delete_lab "$1" ;;
+  deploy) (($# == 1)) || die 'invalid arguments'; deploy "$1" ;;
+  destroy) (($# == 1)) || die 'invalid arguments'; destroy "$1" ;;
+  inspect) (($# == 1)) || die 'invalid arguments'; inspect_lab "$1" ;;
+  meta-get) (($# == 2)) || die 'invalid arguments'; meta_get "$1" "$2" ;;
+  meta-put) (($# == 2)) || die 'invalid arguments'; meta_put "$1" "$2" ;;
+  ready) (($# == 2)) || die 'invalid arguments'; ready "$1" "$2" ;;
+  show) (($# == 4)) || die 'invalid arguments'; show "$1" "$2" "$3" "$4" ;;
+  configure) (($# == 2)) || die 'invalid arguments'; configure "$1" "$2" ;;
+  config-diff) (($# == 2)) || die 'invalid arguments'; config_diff "$1" "$2" ;;
+  restore-node) (($# == 2)) || die 'invalid arguments'; restore_node "$1" "$2" ;;
+  link-state) (($# == 4)) || die 'invalid arguments'; link_state "$1" "$2" "$3" "$4" ;;
+  link-mtu) (($# == 4)) || die 'invalid arguments'; link_mtu "$1" "$2" "$3" "$4" ;;
+  netem) (($# == 4 || $# == 7)) || die 'invalid arguments'; netem "$@" ;;
+  bgp-clear) (($# == 3)) || die 'invalid arguments'; bgp_clear "$1" "$2" "$3" ;;
+  ping) (($# == 4 || $# == 5)) || die 'invalid arguments'; ping_node "$@" ;;
+  ping-sweep) (($# >= 4)) || die 'invalid arguments'; ping_sweep "$@" ;;
+  traceroute) (($# == 3 || $# == 4)) || die 'invalid arguments'; traceroute_node "$@" ;;
+  *) die 'invalid action' ;;
+esac

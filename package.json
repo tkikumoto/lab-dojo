@@ -1,0 +1,14 @@
+{
+  "name": "lab-dojo",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server/src/index.mjs",
+    "check": "for f in server/src/*.mjs; do node --check \"$f\" || exit 1; done && bash -n remote/clab-mcp-remote && bash -n remote/install-remote.sh"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.5"
+  }
+}
