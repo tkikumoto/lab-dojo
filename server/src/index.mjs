@@ -1,10 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { remote } from "./remote.mjs";
+import { remote, sshTarget } from "./remote.mjs";
 import {
-  buildTopology, describeTopology, helperSpec, KINDS, nodeByName, osIfName, renderStartupConfig, ROUTING_MODES,
-  TEMPLATES, toEth,
+  buildTopology, cliCommand, describeAccess, describeTopology, helperSpec, KINDS, linkInterfaces, nodeByName,
+  renderStartupConfig, ROUTING_MODES, TEMPLATES, toEth,
 } from "./topology.mjs";
 import {
   getBgpNeighborDetail, getBgpRoutes, getBgpSummary, getInterfaces, getOspfInterfaces, getOspfNeighbors, getRoutes,
@@ -24,7 +24,9 @@ const server = new McpServer(
       "Containerlab network lab server (FRR and Arista cEOS routers on a remote VM).",
       "Layer 1 builds labs (create_topology -> deploy_topology), layer 2 inspects and changes routers, layer 3 runs troubleshooting exercises.",
       "Exercises are in tutor mode: a human learner troubleshoots. Anything under `tutor_only` must not be revealed to the learner unless they give up.",
-      "Ask for explicit confirmation before destroy_topology. Router CLIs are reachable only through these tools; shell access is not available by design.",
+      "Ask for explicit confirmation before destroy_topology. You reach router CLIs only through these tools; shell access is not available to you by design.",
+      "FRR nodes create the Linux devices their configuration implies within a few seconds: a macvlan per `vrrp <vrid> ip|ipv6 <address>` line, 802.1Q subinterfaces named `<parent>.<vid>`, and `loopback<N>`/`dummy<N>` interfaces. So VRRP, router-on-a-stick and extra loopbacks need only FRR configuration. A link-local IPv6 VRRP address is not installed; use a global one. MPLS/LDP and GRE are not available on this VM's kernel.",
+      "Whenever a lab is deployed, show the user the `access` section of the result as a table: every node's management IP, its cli command, and each link interface with the neighbour interface it connects to. list_nodes returns the same details later.",
     ].join(" "),
   },
 );
@@ -84,6 +86,9 @@ async function deployLab(labName, topology, { waitReady: wait = true, timeoutSec
       ? "All routers have loaded their startup configuration. Routing converges within ~10-30 s."
       : "Some routers are still booting (cEOS can take a couple of minutes). Retry list_nodes or snapshot_state shortly.";
   }
+  const status = await inspectLab(labName).catch(() => ({}));
+  result.access = describeAccess(topology, status, sshTarget);
+  result.show_user = "Show the user the `access` section as a table: node, management IP, cli command, and every interface with the neighbour interface it connects to.";
   return result;
 }
 
@@ -98,7 +103,7 @@ tool(
     "Define a new lab from a template or an explicit node/link list. Addressing, OSPF/BGP configuration and Containerlab YAML are generated (raw YAML is not accepted, for safety).",
     `Templates: ${TEMPLATES.join(", ")}. Routing: ospf (area 0), ebgp (AS 65000+i per node), ibgp-ospf (OSPF underlay + iBGP full mesh AS 65000), none (addresses only, so the learner configures routing).`,
     "Addressing: loopback 10.255.0.<i>/32; link between nodes i<j = 10.<i>.<j>.0/30; BGP modes add service prefix 172.16.<i>.0/24.",
-    "Kinds: frr (light, ~50 MB) or ceos (Arista cEOS, ~1.5 GB RAM each, max 6 per lab).",
+    "Kinds: frr (light, ~50 MB; OSPFv2/v3, BGP, IS-IS, RIP, BFD, VRRP and static routing daemons run) or ceos (Arista cEOS, ~1.5 GB RAM each, max 6 per lab).",
   ].join(" "),
   {
     name: z.string().describe("New lab name: lowercase letters, digits, '-', max 20 chars."),
@@ -116,7 +121,7 @@ tool(
     extra_config: z.record(z.string(), z.array(z.string())).optional()
       .describe("Extra startup-config lines per node, appended at the top level of that node's config (vendor syntax)."),
     replace: z.boolean().optional().describe("Replace an existing, non-deployed lab definition with the same name."),
-    deploy: z.boolean().optional().describe("Also deploy it right away (default false)."),
+    deploy: z.boolean().optional().describe("Also deploy it right away (default false). The result then includes the `access` section; always show it to the user."),
   },
   CHANGES_LAB,
   async (args) => {
@@ -147,7 +152,7 @@ tool(
 
 tool(
   "deploy_topology",
-  "Start a defined lab's containers and links, then wait until every router has loaded its startup configuration. FRR takes seconds; cEOS can take 1-3 minutes.",
+  "Start a defined lab's containers and links, then wait until every router has loaded its startup configuration. FRR takes seconds; cEOS can take 1-3 minutes. The result's `access` section lists each node's management IP, CLI command and link interfaces; always show it to the user.",
   {
     lab,
     wait_ready: z.boolean().optional().describe("Wait for routers to finish booting (default true)."),
@@ -189,7 +194,7 @@ tool("get_topology", "Show a lab's design: nodes, kinds, loopbacks, ASNs, every 
     return json(view);
   });
 
-tool("list_nodes", "List a lab's nodes with container state, management IP, loopback and link interfaces (vendor names).",
+tool("list_nodes", "List a lab's nodes with container state, management IP, CLI access command, loopback and link interfaces with the neighbour interface each connects to (vendor names).",
   { lab }, READ_ONLY, async ({ lab: labName }) => {
     const { topology } = await context(labName);
     const status = await inspectLab(labName);
@@ -198,8 +203,9 @@ tool("list_nodes", "List a lab's nodes with container state, management IP, loop
       kind: n.kind,
       state: status[n.name]?.state ?? "not deployed",
       mgmt_ipv4: status[n.name]?.mgmt_ipv4,
+      cli: cliCommand(topology, n),
       loopback: n.loopback,
-      interfaces: n.interfaces.map((i) => `${osIfName(n.kind, i.name)} ${i.ip}/30 -> ${i.peer.node}`),
+      interfaces: linkInterfaces(topology, n).map((i) => `${i.interface} ${i.ip} -> ${i.peer} ${i.peer_interface}`),
     })));
   });
 

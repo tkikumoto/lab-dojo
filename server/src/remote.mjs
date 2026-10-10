@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 
-const sshTarget = process.env.CONTAINERLAB_SSH_TARGET ?? "containerlab-server@orb";
+export const sshTarget = process.env.CONTAINERLAB_SSH_TARGET ?? "containerlab-server@orb";
 const remoteHelper = process.env.CONTAINERLAB_REMOTE_HELPER ?? "/usr/local/libexec/clab-mcp-remote";
 // Reusing one SSH connection keeps multi-node snapshots fast. The socket path
 // must stay short (Unix sockets are limited to ~104 bytes on macOS).

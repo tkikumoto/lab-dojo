@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server/src/index.mjs",
-    "check": "for f in server/src/*.mjs; do node --check \"$f\" || exit 1; done && bash -n remote/clab-mcp-remote && bash -n remote/install-remote.sh"
+    "check": "for f in server/src/*.mjs; do node --check \"$f\" || exit 1; done && bash -n remote/clab-mcp-remote && bash -n remote/install-remote.sh && bash -n remote/frr/lab-start && python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' remote/frr/lab-netdev-sync"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
