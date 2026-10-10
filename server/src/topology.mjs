@@ -282,6 +282,39 @@ export function renderStartupConfig(topology, node) {
   return node.kind === "ceos" ? renderCeos(topology, node) : renderFrr(topology, node);
 }
 
+/** The command a human runs on the VM to open a node's CLI. */
+export function cliCommand(topology, node) {
+  return `docker exec -it clab-${topology.name}-${node.name} ${node.kind === "ceos" ? "Cli" : "vtysh"}`;
+}
+
+/** A node's link interfaces with the neighbour and neighbour interface each one faces (vendor names). */
+export function linkInterfaces(topology, node) {
+  return node.interfaces.map((i) => ({
+    interface: osIfName(node.kind, i.name),
+    ip: `${i.ip}/${i.prefix_len}`,
+    peer: i.peer.node,
+    peer_interface: osIfName(nodeByName(topology, i.peer.node).kind, i.peer.interface),
+  }));
+}
+
+/**
+ * How a human reaches each node of a deployed lab: management IP, CLI command
+ * and which interface connects to which neighbour. `status` is inspectLab().
+ */
+export function describeAccess(topology, status, sshTarget) {
+  return {
+    vm: `ssh ${sshTarget}`,
+    how: "Run the cli commands on the VM. Management IPs are reachable from the VM.",
+    nodes: topology.nodes.map((n) => ({
+      name: n.name,
+      kind: n.kind,
+      mgmt_ipv4: status[n.name]?.mgmt_ipv4 ?? "unknown",
+      cli: cliCommand(topology, n),
+      interfaces: linkInterfaces(topology, n).map((i) => `${i.interface} -> ${i.peer} ${i.peer_interface}`),
+    })),
+  };
+}
+
 /** Compact human-readable view for get_topology. */
 export function describeTopology(topology) {
   return {
