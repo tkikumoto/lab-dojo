@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Creates the Linux devices that an FRR configuration implies.
+
+FRR configures interfaces but never creates them, so some features stay
+silently inactive until someone runs `ip link add` by hand. This watcher reads
+the running configuration every few seconds and makes the kernel match:
+
+  vrrp <vrid> ip|ipv6 <address>        macvlan on that interface carrying the
+                                       VRRP virtual MAC and the virtual address
+                                       (IPv6: global addresses only, see below)
+  interface <parent>.<vid>             802.1Q subinterface
+  interface loopback<N>|lo<N>|dummy<N> dummy interface
+
+A subinterface or dummy is created once its stanza holds at least one line and
+removed when the stanza is empty again (FRR refuses `no interface` while the
+device exists). Only devices created here, marked with an ifalias, are ever
+changed or removed; anything set up by hand is left alone.
+
+Containerlab's management interface (eth0) is never used as a parent: it sits
+on a bridge shared with every other lab.
+
+A link-local IPv6 virtual address is never installed. vrrpd sends from the
+first link-local it finds on the macvlan and checksums with it, so a second
+one there makes every advertisement fail its checksum and both routers stay
+Master. The macvlan keeps only its own random link-local.
+"""
+import ipaddress
+import json
+import os
+import re
+import subprocess
+import time
+
+INTERVAL = 2
+MARK = "lab-dojo-auto"
+MGMT = "eth0"
+# Polls a device must be unwanted for before it is removed, so a daemon that is
+# restarting (and briefly missing from the running config) does not flap it.
+REMOVE_AFTER = 3
+IFNAME_MAX = 15
+IFNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,14}$")
+VLAN_RE = re.compile(r"^(.+)\.([0-9]{1,4})$")
+DUMMY_RE = re.compile(r"^(lo|loopback|dummy)[0-9]{1,4}$", re.IGNORECASE)
+VRRP_RE = re.compile(r"^vrrp ([0-9]{1,3}) (ip|ipv6) (\S+)$")
+
+
+noted = set()
+
+
+def log(message):
+    print(f"lab-netdev-sync: {message}", flush=True)
+
+
+def log_once(message):
+    if message not in noted:
+        noted.add(message)
+        log(message)
+
+
+def run(*argv):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def ip(*args, quiet=False):
+    """Runs one `ip` command. A failure is logged once, with the kernel's reason."""
+    result = run("ip", *args)
+    if result is not None and result.returncode == 0:
+        return True
+    if not quiet:
+        reason = "no answer" if result is None else result.stderr.strip() or f"exit {result.returncode}"
+        log_once(f"`ip {' '.join(args)}` failed: {reason}")
+    return False
+
+
+def read_links():
+    """Every device in this network namespace, by name, with its addresses."""
+    result = run("ip", "-j", "-d", "addr", "show")
+    if result is None or result.returncode != 0:
+        log_once("cannot list network devices with `ip -j -d addr show`")
+        return None
+    return {link["ifname"]: link for link in json.loads(result.stdout)}
+
+
+def read_config():
+    """Interface stanzas of the running configuration: name -> config lines."""
+    result = run("vtysh", "-c", "show running-config")
+    if result is None or result.returncode != 0 or "frr version" not in result.stdout:
+        return None  # FRR is still starting
+    stanzas, current = {}, None
+    for line in result.stdout.splitlines():
+        if line.startswith("interface "):
+            current = stanzas.setdefault(line.split()[1], [])
+        elif line.startswith(" ") and current is not None:
+            current.append(line.strip())
+        else:
+            current = None
+    return stanzas
+
+
+def add_marked(name, *spec, quiet=False):
+    """Adds a device and marks it at once, so a later failure cannot orphan it."""
+    if not ip("link", "add", *spec, quiet=quiet):
+        return False
+    ip("link", "set", "dev", name, "alias", MARK)
+    return True
+
+
+def enable(name, what):
+    ip("link", "set", "dev", name, "up")
+    log(f"created {name} ({what})")
+
+
+def prefix_len(parent, address):
+    """Prefix length of the parent's subnet that contains the address."""
+    family = "inet" if address.version == 4 else "inet6"
+    for info in parent.get("addr_info", []):
+        if info.get("family") != family:
+            continue
+        network = ipaddress.ip_interface(f"{info['local']}/{info['prefixlen']}").network
+        if address in network:
+            return info["prefixlen"]
+    return address.max_prefixlen
+
+
+def vrrp_groups(parent, lines):
+    """(vrid, ip version) -> virtual addresses to install, from one interface stanza."""
+    groups = {}
+    for line in lines:
+        match = VRRP_RE.match(line)
+        if not match or not 1 <= int(match[1]) <= 255:
+            continue
+        try:
+            address = ipaddress.ip_address(match[3])
+        except ValueError:
+            continue
+        if (match[2] == "ip") != (address.version == 4):
+            continue
+        addresses = groups.setdefault((int(match[1]), address.version), [])
+        if address.version == 6 and address.is_link_local:
+            log_once(f"VRRP {match[1]} on {parent}: link-local virtual address {address} is not "
+                     "installed (it would break vrrpd's checksums); use a global address as the gateway")
+        else:
+            addresses.append(address)
+    return groups
+
+
+def ensure_vrrp(links, parent, vrid, version, addresses):
+    """Returns the name of the macvlan serving this virtual router, if managed here."""
+    mac = "00:00:5e:00:%02x:%02x" % (1 if version == 4 else 2, vrid)
+    family = "inet" if version == 4 else "inet6"
+    wanted = {(str(a), prefix_len(links[parent], a)) for a in addresses}
+    for link in links.values():
+        if (link.get("linkinfo", {}).get("info_kind") == "macvlan"
+                and link.get("link") == parent and link.get("address") == mac):
+            if link.get("ifalias") != MARK:
+                return None
+            name = link["ifname"]
+            current = {(str(ipaddress.ip_address(i["local"])), i["prefixlen"])
+                       for i in link.get("addr_info", []) if i.get("family") == family}
+            for address, length in current - wanted:
+                # The kernel's own IPv6 link-local stays; VRRP needs it.
+                if not ipaddress.ip_address(address).is_link_local:
+                    ip("addr", "del", f"{address}/{length}", "dev", name)
+            for address, length in wanted - current:
+                if ip("addr", "add", f"{address}/{length}", "dev", name):
+                    log(f"added {address}/{length} to {name}")
+            return name
+
+    name = f"vrrp{version}-{parent}-{vrid}"
+    if len(name) > IFNAME_MAX or name in links:
+        name = f"vrrp{version}-{links[parent]['ifindex']}-{vrid}"
+    if len(name) > IFNAME_MAX or name in links:
+        log_once(f"VRRP {vrid} on {parent}: no free device name for its macvlan")
+        return None
+    # A random IPv6 link-local keeps two routers from deriving the same one
+    # from the shared virtual MAC. Not every namespace accepts it at creation.
+    macvlan = ("type", "macvlan", "mode", "bridge")
+    if not add_marked(name, name, "link", parent, "addrgenmode", "random", *macvlan, quiet=True):
+        if not add_marked(name, name, "link", parent, *macvlan):
+            return None
+        ip("link", "set", "dev", name, "addrgenmode", "random", quiet=True)
+    if not ip("link", "set", "dev", name, "address", mac):
+        ip("link", "del", name)
+        return None
+    for address, length in sorted(wanted):
+        ip("addr", "add", f"{address}/{length}", "dev", name)
+    shown = ", ".join(f"{a}/{n}" for a, n in sorted(wanted)) or "no virtual address installed"
+    enable(name, f"VRRP {vrid} on {parent}, {shown}")
+    return name
+
+
+def sync(unwanted):
+    config = read_config()
+    links = read_links()
+    if config is None or links is None:
+        return
+    keep = set()
+
+    for name, lines in config.items():
+        if not IFNAME_RE.match(name) or not lines:
+            continue
+        vlan = VLAN_RE.match(name)
+        if vlan and 1 <= int(vlan[2]) <= 4094:
+            if vlan[1] == MGMT:
+                log_once(f"{name}: no subinterfaces on the management interface {MGMT}")
+                continue
+            keep.add(name)
+            if name not in links and vlan[1] in links:
+                if add_marked(name, "link", vlan[1], "name", name, "type", "vlan", "id", vlan[2]):
+                    enable(name, f"VLAN {int(vlan[2])} on {vlan[1]}")
+        elif DUMMY_RE.match(name):
+            keep.add(name)
+            if name not in links and add_marked(name, name, "type", "dummy"):
+                enable(name, "dummy interface")
+
+    # A parent created just above is picked up on the next pass.
+    for parent, lines in config.items():
+        groups = vrrp_groups(parent, lines) if parent in links else {}
+        if groups and parent == MGMT:
+            log_once(f"VRRP on {MGMT}: not set up on the management interface")
+            continue
+        for (vrid, version), addresses in groups.items():
+            name = ensure_vrrp(links, parent, vrid, version, addresses)
+            if name:
+                keep.add(name)
+
+    for name, link in links.items():
+        if link.get("ifalias") != MARK:
+            continue
+        if name in keep:
+            unwanted.pop(name, None)
+            # The kernel lowers a child's MTU with its parent's but never raises it back.
+            parent = links.get(link.get("link"))
+            if parent and link.get("mtu") != parent.get("mtu"):
+                ip("link", "set", "dev", name, "mtu", str(parent["mtu"]))
+            continue
+        unwanted[name] = unwanted.get(name, 0) + 1
+        if unwanted[name] >= REMOVE_AFTER:
+            unwanted.pop(name)
+            # Deleting a parent earlier in this pass already took its children.
+            if os.path.exists(f"/sys/class/net/{name}") and ip("link", "del", name):
+                log(f"removed {name} (no longer configured)")
+
+
+def main():
+    unwanted = {}
+    while True:
+        try:
+            sync(unwanted)
+        except Exception as error:  # keep watching whatever one pass hits
+            log(f"error: {error}")
+        time.sleep(INTERVAL)
+
+
+if __name__ == "__main__":
+    main()

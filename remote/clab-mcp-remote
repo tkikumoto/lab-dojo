@@ -15,7 +15,8 @@ export LC_ALL=C
 
 STATE_ROOT=/var/lib/containerlab-mcp
 LABS="$STATE_ROOT/labs"
-FRR_IMAGE=quay.io/frrouting/frr:10.7.1
+# Built by install-remote.sh from remote/frr (stock FRR plus lab-start and lab-netdev-sync).
+FRR_IMAGE=lab-dojo/frr:10.7.1
 CEOS_IMAGE=ceos:4.36.2F
 LINK_MTU=1500
 MAX_LABS=6
@@ -222,6 +223,9 @@ create_lab() {
       : > "$tmp/ifaces/$node"
       if [[ ${kinds[$node]} == frr ]]; then
         printf 'zebra=yes\nospfd=yes\nbgpd=yes\nstaticd=yes\nvtysh_enable=yes\n' > "$tmp/configs/$node/daemons"
+        printf 'ospf6d=yes\nisisd=yes\nripd=yes\nbfdd=yes\nvrrpd=yes\n' >> "$tmp/configs/$node/daemons"
+        printf 'ospf6d_options=" -A ::1"\nisisd_options="  -A 127.0.0.1"\nripd_options="   -A 127.0.0.1"\n' >> "$tmp/configs/$node/daemons"
+        printf 'bfdd_options="   -A 127.0.0.1"\nvrrpd_options="  -A 127.0.0.1"\n' >> "$tmp/configs/$node/daemons"
         printf 'zebra_options="  -A 127.0.0.1 -s 90000000"\nospfd_options="  -A 127.0.0.1"\n' >> "$tmp/configs/$node/daemons"
         printf 'bgpd_options="  -A 127.0.0.1"\nstaticd_options="  -A 127.0.0.1"\n' >> "$tmp/configs/$node/daemons"
         printf 'service integrated-vtysh-config\n' > "$tmp/configs/$node/vtysh.conf"
