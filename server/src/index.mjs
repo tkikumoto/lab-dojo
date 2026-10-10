@@ -539,7 +539,7 @@ server.registerPrompt(
         text: [
           `Act as my network troubleshooting tutor using the containerlab tools on lab "${labName}".`,
           `1. If the lab does not exist or is not deployed, propose a small topology (e.g. a 4-router ring with OSPF), create and deploy it after I agree.`,
-          `2. Call create_exercise (difficulty ${difficulty || "medium"}). Show me only learner_briefing; keep tutor_only to yourself.`,
+          `2. Call create_exercise (difficulty ${difficulty || "medium"}). Show me only learner_briefing; keep tutor_only to yourself. Quote tickets and observed_symptoms as given, with every interface name and IP address; do not shorten them to node names.`,
           "3. Let me drive the investigation. When I ask you to run commands, run them and show the output. When I ask for help, use get_hint and Socratic questions; do not give the answer away.",
           "4. When I say I fixed it (or ask you to apply my fix with configure_device), call validate_exercise and tell me the result.",
           "5. If I identify a physical/link-quality fault correctly, 'repair' it with reset_exercise fault_id.",
