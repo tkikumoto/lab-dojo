@@ -18,6 +18,9 @@ docker build -q --build-arg "FRR_VERSION=${FRR_IMAGE##*:}" -t "$FRR_IMAGE" "$SCR
 HOST_IMAGE="$(sed -n 's/^HOST_IMAGE=//p' "$SCRIPT_DIR/clab-mcp-remote")"
 [[ $HOST_IMAGE == */host:* ]] || { echo "HOST_IMAGE not found in clab-mcp-remote" >&2; exit 1; }
 docker build -q -t "$HOST_IMAGE" "$SCRIPT_DIR/host" >/dev/null
+# A rebuild leaves the build it replaces without a tag. Remove those, and only
+# those: the label limits this to images built from this folder.
+docker image prune -f --filter label=org.lab-dojo.image >/dev/null
 
 sudo install -d -m 0755 /usr/local/libexec
 sudo install -m 0755 "$SCRIPT_DIR/clab-mcp-remote" /usr/local/libexec/clab-mcp-remote

@@ -2,6 +2,8 @@
 # install-remote.sh builds it, tagged from HOST_IMAGE in clab-mcp-remote.
 # iputils ping and traceroute are needed: the MCP helper runs and parses them.
 FROM alpine:3.22
+# install-remote.sh removes superseded builds by this label.
+LABEL org.lab-dojo.image="host"
 
 RUN apk add --no-cache \
       bash tini \

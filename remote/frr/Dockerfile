@@ -3,6 +3,8 @@
 # ping and traceroute stay the stock BusyBox ones; the MCP helper parses them.
 ARG FRR_VERSION=10.7.1
 FROM quay.io/frrouting/frr:${FRR_VERSION}
+# install-remote.sh removes superseded builds by this label.
+LABEL org.lab-dojo.image="frr"
 
 RUN apk add --no-cache tcpdump mtr
 
