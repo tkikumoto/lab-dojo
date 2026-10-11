@@ -23,6 +23,7 @@ const server = new McpServer(
     instructions: [
       "Containerlab network lab server (FRR and Arista cEOS routers on a remote VM).",
       "Layer 1 builds labs (create_topology -> deploy_topology), layer 2 inspects and changes routers, layer 3 runs troubleshooting exercises.",
+      "Assume no lab is running: call list_labs first. Before create_topology, ask the user about anything the request leaves open (node count, how nodes connect, frr or ceos, what is pre-configured, lab name), show the plan and wait for their go-ahead; never guess silently. 'I will do the routing' or 'just the connections' means routing `bare`. Layer 2 topics such as STP need ceos nodes and `bare`.",
       "Exercises are in tutor mode: a human learner troubleshoots. Anything under `tutor_only` must not be revealed to the learner unless they give up.",
       "Ask for explicit confirmation before destroy_topology. You reach router CLIs only through these tools; shell access is not available to you by design.",
       "FRR nodes create the Linux devices their configuration implies within a few seconds: a macvlan per `vrrp <vrid> ip|ipv6 <address>` line, 802.1Q subinterfaces named `<parent>.<vid>`, and `loopback<N>`/`dummy<N>` interfaces. So VRRP, router-on-a-stick and extra loopbacks need only FRR configuration. A link-local IPv6 VRRP address is not installed; use a global one. MPLS/LDP and GRE are not available on this VM's kernel.",
@@ -59,7 +60,9 @@ async function context(labName, node) {
 
 function resolveAddress(topology, value) {
   if (/^[0-9a-fA-F:.]+$/.test(value) && /[.:]/.test(value)) return value;
-  return nodeByName(topology, value).loopback;
+  const { loopback } = nodeByName(topology, value);
+  if (!loopback) throw new Error(`lab ${topology.name} is bare (no IP addresses were generated); give a literal IP address instead of ${value}`);
+  return loopback;
 }
 
 async function waitReady(labName, topology, timeoutMs) {
@@ -101,8 +104,8 @@ tool(
   "create_topology",
   [
     "Define a new lab from a template or an explicit node/link list. Addressing, OSPF/BGP configuration and Containerlab YAML are generated (raw YAML is not accepted, for safety).",
-    `Templates: ${TEMPLATES.join(", ")}. Routing: ospf (area 0), ebgp (AS 65000+i per node), ibgp-ospf (OSPF underlay + iBGP full mesh AS 65000), none (addresses only, so the learner configures routing).`,
-    "Addressing: loopback 10.255.0.<i>/32; link between nodes i<j = 10.<i>.<j>.0/30; BGP modes add service prefix 172.16.<i>.0/24.",
+    `Templates: ${TEMPLATES.join(", ")}. Routing: ospf (area 0), ebgp (AS 65000+i per node), ibgp-ospf (OSPF underlay + iBGP full mesh AS 65000), none (addresses only, so the learner configures routing), bare (cabling only: no IP addresses at all; a bare cEOS link port is a default switchport, so use bare with ceos nodes for layer 2 labs such as STP or VLANs).`,
+    "Addressing (not in bare): loopback 10.255.0.<i>/32; link between nodes i<j = 10.<i>.<j>.0/30; BGP modes add service prefix 172.16.<i>.0/24.",
     "Kinds: frr (light, ~50 MB; OSPFv2/v3, BGP, IS-IS, RIP, BFD, VRRP and static routing daemons run) or ceos (Arista cEOS, ~1.5 GB RAM each, max 6 per lab).",
   ].join(" "),
   {
@@ -205,7 +208,7 @@ tool("list_nodes", "List a lab's nodes with container state, management IP, CLI 
       mgmt_ipv4: status[n.name]?.mgmt_ipv4,
       cli: cliCommand(topology, n),
       loopback: n.loopback,
-      interfaces: linkInterfaces(topology, n).map((i) => `${i.interface} ${i.ip} -> ${i.peer} ${i.peer_interface}`),
+      interfaces: linkInterfaces(topology, n).map((i) => `${i.interface}${i.ip ? ` ${i.ip}` : ""} -> ${i.peer} ${i.peer_interface}`),
     })));
   });
 
@@ -359,7 +362,7 @@ tool(
   async ({ lab: labName, node, destination, source, count = 3 }) => {
     const { topology, node: n } = await context(labName, node);
     const dest = resolveAddress(topology, destination);
-    const src = source === "loopback" ? n.loopback : source ? resolveAddress(topology, source) : undefined;
+    const src = source ? resolveAddress(topology, source === "loopback" ? n.name : source) : undefined;
     const out = await remote("ping", [labName, n.name, dest, count, ...(src ? [src] : [])], { timeout: 60_000 });
     return json({ from: n.name, destination: dest, ...(src ? { source: src } : {}), ...parsePing(out), raw: out.trim() });
   },
@@ -373,7 +376,7 @@ tool(
   async ({ lab: labName, node, destination, source }) => {
     const { topology, node: n } = await context(labName, node);
     const dest = resolveAddress(topology, destination);
-    const src = source === "loopback" ? n.loopback : source ? resolveAddress(topology, source) : undefined;
+    const src = source ? resolveAddress(topology, source === "loopback" ? n.name : source) : undefined;
     const out = await remote("traceroute", [labName, n.name, dest, ...(src ? [src] : [])], { timeout: 60_000 });
     const hops = parseTraceroute(out);
     return json({
@@ -523,24 +526,63 @@ tool(
 
 // ========================================================================= prompts
 
+// Each prompt takes one free-text request. The steps make Claude ask about gaps
+// and show a plan before anything is built.
+// Claude Code splits what is typed after a slash command on spaces, so an
+// unquoted request arrives as its first word only. CUT_SHORT covers that case.
+const CUT_SHORT = "If that request looks cut short (a single word), the client split it: the whole text I typed after the command is the request.";
+const BUILD_STEPS = [
+  "a. Call list_labs first. Assume nothing is running, and check the limits: 16 nodes and 6 cEOS per lab, 8 cEOS running on the VM, 6 lab definitions.",
+  "b. Before building, look for gaps in the request. These must all be known: how many nodes; how they connect (line, ring, full-mesh, star, leaf-spine, or explicit links); the kind of each node (frr or ceos); what is pre-configured (working routing: ospf, ebgp or ibgp-ospf; `none`: IP addresses only; `bare`: cabling only, no IP addresses); and the lab name. Ask me about everything that is missing or unclear in one message, and do not guess silently. If nothing is missing, skip the questions.",
+  "   - 'I will do the routing' or 'just the connections' means `bare`.",
+  "   - Layer 2 topics (STP, VLANs, switching) need ceos nodes and `bare`: a bare cEOS link port is a default switchport.",
+  "   - If the request cannot be built with these tools, say so plainly and offer the nearest lab that can.",
+  "c. Show the plan as a short table (nodes with kind, links, what is pre-configured, what is left for me, lab name) and wait for my go-ahead.",
+  "d. create_topology with deploy: true, then show the access table.",
+];
+
+const request = (example) => z.string().describe(`What you want, in your own words, e.g. "${example}".`);
+
 server.registerPrompt(
-  "tutor_exercise",
+  "build_lab",
   {
-    description: "Run a guided troubleshooting exercise with Claude as the tutor.",
-    argsSchema: {
-      lab: z.string().describe("Lab name (created if missing)."),
-      difficulty: z.string().optional().describe("easy, medium or hard."),
-    },
+    description: "Build a lab from a free-text description. Claude asks about anything unclear before building.",
+    argsSchema: { request: request("4 routers in a full mesh, I will do the routing") },
   },
-  ({ lab: labName, difficulty }) => ({
+  ({ request: wanted }) => ({
     messages: [{
       role: "user",
       content: {
         type: "text",
         text: [
-          `Act as my network troubleshooting tutor using the containerlab tools on lab "${labName}".`,
-          `1. If the lab does not exist or is not deployed, propose a small topology (e.g. a 4-router ring with OSPF), create and deploy it after I agree.`,
-          `2. Call create_exercise (difficulty ${difficulty || "medium"}). Show me only learner_briefing; keep tutor_only to yourself. Quote tickets and observed_symptoms as given, with every interface name and IP address; do not shorten them to node names.`,
+          `Build a network lab with the lab-dojo tools from this request: "${wanted}"`,
+          CUT_SHORT,
+          "Work in this order and do not skip a step:",
+          ...BUILD_STEPS,
+          "e. Finish with what is configured and what is left for me to do.",
+        ].join("\n"),
+      },
+    }],
+  }),
+);
+
+server.registerPrompt(
+  "exercise",
+  {
+    description: "Run a guided troubleshooting exercise with Claude as the tutor, on an existing lab or one built from your description.",
+    argsSchema: { request: request("eBGP lab with 4 routers, medium") },
+  },
+  ({ request: wanted }) => ({
+    messages: [{
+      role: "user",
+      content: {
+        type: "text",
+        text: [
+          `Act as my network troubleshooting tutor with the lab-dojo tools, from this request: "${wanted}"`,
+          CUT_SHORT,
+          "1. Get a lab. If the request names an existing lab (see list_labs), use it, and deploy it if it is not running. Otherwise treat the request as a lab description and follow these steps. An exercise needs working routing (ospf, ebgp or ibgp-ospf), never none or bare.",
+          ...BUILD_STEPS,
+          "2. The difficulty is the word easy, medium or hard in the request; use medium if there is none, and say which you used. A topic in the request (BGP, OSPF, ...) becomes the focus. Call create_exercise. Show me only learner_briefing; keep tutor_only to yourself. Quote tickets, observed_symptoms and task as given, with every interface name and IP address; do not shorten them to node names.",
           "3. Let me drive the investigation. When I ask you to run commands, run them and show the output. When I ask for help, use get_hint and Socratic questions; do not give the answer away.",
           "4. When I say I fixed it (or ask you to apply my fix with configure_device), call validate_exercise and tell me the result.",
           "5. If I identify a physical/link-quality fault correctly, 'repair' it with reset_exercise fault_id.",

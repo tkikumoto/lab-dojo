@@ -3,7 +3,7 @@
 // progressive hints, the solution, and any extra checks needed to prove it is
 // fixed when the generic health checks would not notice (e.g. packet loss).
 import { remote } from "./remote.mjs";
-import { loopbackLabel, nodeByName, osIfName, toEth, usesBgp, usesOspf } from "./topology.mjs";
+import { isBare, loopbackLabel, nodeByName, osIfName, toEth, usesBgp, usesOspf } from "./topology.mjs";
 
 function linkEnds(topology) {
   return topology.links.flatMap((link) => [[link.a, link.b], [link.b, link.a]].map(([self, other]) => ({
@@ -96,7 +96,7 @@ export const FAULTS = {
     family: "ip",
     difficulty: 1,
     summary: "Re-address one end of a link into the wrong subnet (swapped octets).",
-    applies: (t) => t.links.length > 0,
+    applies: (t) => t.links.length > 0 && !isBare(t),
     candidates: (t) => linkEnds(t),
     resolve: (t, p) => {
       const end = resolveLinkEnd(t, p);
@@ -224,7 +224,7 @@ export const FAULTS = {
     family: "ip",
     difficulty: 2,
     summary: "Add a static /32 to Null0 for another router's loopback.",
-    applies: (t) => t.nodes.length > 1,
+    applies: (t) => t.nodes.length > 1 && !isBare(t),
     candidates: (t) => t.nodes.flatMap((n) => t.nodes.filter((o) => o !== n).map((o) => ({ node: n.name, target: o.name }))),
     resolve: (t, p) => {
       nodeByName(t, p.node);
@@ -331,7 +331,7 @@ export const FAULTS = {
     family: "quality",
     difficulty: 2,
     summary: "Add 25% packet loss on one end of a link (simulated bad cable/optic).",
-    applies: (t) => t.links.length > 0,
+    applies: (t) => t.links.length > 0 && !isBare(t),
     candidates: (t) => linkEnds(t).filter((e) => nodeByName(t, e.node).kind === "frr"),
     resolve: (t, p) => ({ ...resolveLinkEnd(t, p), loss_percent: p.loss_percent ?? 25 }),
     actions: (t, p) => [{ op: "netem", node: p.node, interface: p.interface, delay_ms: 0, jitter_ms: 0, loss_percent: p.loss_percent }],
@@ -349,7 +349,7 @@ export const FAULTS = {
     family: "quality",
     difficulty: 2,
     summary: "Add 200 ms of delay on one end of a link.",
-    applies: (t) => t.links.length > 0,
+    applies: (t) => t.links.length > 0 && !isBare(t),
     candidates: (t) => linkEnds(t).filter((e) => nodeByName(t, e.node).kind === "frr"),
     resolve: (t, p) => ({ ...resolveLinkEnd(t, p), delay_ms: p.delay_ms ?? 200 }),
     actions: (t, p) => [{ op: "netem", node: p.node, interface: p.interface, delay_ms: p.delay_ms, jitter_ms: 10, loss_percent: 0 }],

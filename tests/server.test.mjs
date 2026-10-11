@@ -1,7 +1,7 @@
 // Pure logic only: nothing here reaches the VM.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildTopology } from "../server/src/topology.mjs";
+import { buildTopology, describeTopology, linkInterfaces, renderStartupConfig } from "../server/src/topology.mjs";
 import { planFault, rng } from "../server/src/faults.mjs";
 import { parsePing } from "../server/src/drivers.mjs";
 import { taskFor } from "../server/src/exercises.mjs";
@@ -66,4 +66,34 @@ test("the task says how many faults and what done means, and less on harder leve
   assert.equal(hard[2], 'You are done when all 40 health checks pass. Say "validate my fix" to check.');
   assert.match(hard[4], /3 per fault/);
   assert.doesNotMatch(taskFor("none", { faults: 2, separateRouters: false, symptoms: 0, checks: 40 })[0], /different routers/);
+});
+
+test("a bare lab is cabling only: no addresses, cEOS ports stay switchports", () => {
+  const t = buildTopology({ name: "stp3", template: "ring", size: 3, routing: "bare", node_kinds: { r3: "ceos" } });
+  assert.equal(t.nodes[0].loopback, undefined);
+  assert.equal(t.links[0].subnet, undefined);
+  assert.equal(renderStartupConfig(t, t.nodes[0]), [
+    "frr defaults traditional", "hostname r1", "service integrated-vtysh-config", "!",
+    "interface eth1", " description to r2 eth1", "exit", "!",
+    "interface eth2", " description to r3 eth2", "exit", "!",
+    "!",
+  ].join("\n"));
+  assert.equal(renderStartupConfig(t, t.nodes[2]), [
+    "hostname r3", "!",
+    "interface Ethernet1", "   description to r2 eth2", "!",
+    "interface Ethernet2", "   description to r1 eth2", "!",
+    "!",
+  ].join("\n"));
+  assert.deepEqual(linkInterfaces(t, t.nodes[0])[0], { interface: "eth1", ip: undefined, peer: "r2", peer_interface: "eth1" });
+  assert.doesNotMatch(JSON.stringify(describeTopology(t)), /undefined|10\./);
+  // Faults that need addresses are not offered; a cable fault still is.
+  assert.throws(() => planFault(t, "static_blackhole", undefined, rng(1)), /does not apply/);
+  assert.equal(planFault(t, "interface_shutdown", { node: "r1" }, rng(1)).params.interface, "eth1");
+});
+
+test("an addressed lab still renders addresses and routed cEOS ports", () => {
+  const t = buildTopology({ name: "mix", template: "ring", size: 3, routing: "none", node_kinds: { r3: "ceos" } });
+  assert.match(renderStartupConfig(t, t.nodes[0]), /interface lo\n ip address 10\.255\.0\.1\/32/);
+  assert.match(renderStartupConfig(t, t.nodes[2]), /ip routing[^]*no switchport\n   ip address 10\.2\.3\.2\/30/);
+  assert.equal(describeTopology(t).links[0], "r1 eth1 10.1.2.1  <->  r2 eth1 10.1.2.2   (10.1.2.0/30)");
 });
