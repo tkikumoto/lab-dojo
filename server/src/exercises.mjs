@@ -111,8 +111,31 @@ function symptomsFor(level, failed) {
   const endToEnd = /^(reach|quality|bgp-route|bgp-prefixes):/;
   return failed
     .filter((c) => level === "all" || endToEnd.test(c.id))
-    .map((c) => `NOT OK: ${c.description}`)
+    .map((c) => c.description)
     .slice(0, 12);
+}
+
+/**
+ * The learner's steps. Easier levels spell out more; no level says where the
+ * fault is. `level` is the difficulty's symptom visibility, `symptoms` how many
+ * are listed in the briefing.
+ */
+export function taskFor(level, { faults, separateRouters, symptoms, checks }) {
+  const one = faults === 1;
+  const listed = symptoms === 0 || level === "none"
+    ? ""
+    : level === "all"
+      ? `the ${symptoms} symptom${symptoms === 1 ? " above is" : "s above are"} gone and `
+      : "the symptoms above are gone (they are only the end-to-end ones; other checks may be failing too) and ";
+  return [
+    one
+      ? "Find the cause. There is one fault in this lab: one router has one setting or link that is wrong."
+      : `Find the causes. There are ${faults} faults${separateRouters ? " on different routers" : ""}. Fixing one will not clear every symptom.`,
+    `Fix ${one ? "it" : "each one"} on the router where the cause is. Any correct fix is accepted.`,
+    `You are done when ${listed}all ${checks} health checks pass. Say "validate my fix" to check.`,
+    "Then explain which router, which setting or link, and how you found it.",
+    `You can ask for a hint at any time (3 ${one ? "available" : "per fault"}).`,
+  ];
 }
 
 export async function createExercise(lab, topology, state, opts) {
@@ -157,6 +180,7 @@ export async function createExercise(lab, topology, state, opts) {
   await sleep(settleSeconds * 1000);
   const after = await evaluateHealth(lab, topology, { extraChecks: faults.flatMap((f) => f.checks) });
 
+  const symptoms = symptomsFor(DIFFICULTIES[difficulty].symptoms, after.summary.failed);
   const exercise = {
     id,
     status: "active",
@@ -167,7 +191,13 @@ export async function createExercise(lab, topology, state, opts) {
     faults: faults.map((f) => ({ ...f })),
     briefing: {
       tickets: faults.map((f) => faultTicket(topology, f)),
-      observed_symptoms: symptomsFor(DIFFICULTIES[difficulty].symptoms, after.summary.failed),
+      observed_symptoms: symptoms,
+      task: taskFor(DIFFICULTIES[difficulty].symptoms, {
+        faults: faults.length,
+        separateRouters: usedNodes.size === faults.length,
+        symptoms: symptoms.length,
+        checks: after.summary.total,
+      }),
     },
     hints_given: {},
     attempts: [],
@@ -180,10 +210,7 @@ export async function createExercise(lab, topology, state, opts) {
     exercise_id: id,
     lab,
     difficulty,
-    learner_briefing: {
-      ...exercise.briefing,
-      task: "Find and fix the root cause. Use show commands to investigate. Ask for a hint at any time. Say when you think it is fixed and it will be validated.",
-    },
+    learner_briefing: exercise.briefing,
     tutor_only: {
       note: TUTOR_NOTE,
       faults: faults.map((f) => describeFault(topology, f)),
