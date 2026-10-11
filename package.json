@@ -2,6 +2,7 @@
   "name": "lab-dojo",
   "version": "0.2.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "start": "node server/src/index.mjs",

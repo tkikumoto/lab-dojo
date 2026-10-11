@@ -1,10 +1,12 @@
 // Pure logic only: nothing here reaches the VM.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { buildTopology, describeTopology, linkInterfaces, renderStartupConfig } from "../server/src/topology.mjs";
 import { planFault, rng } from "../server/src/faults.mjs";
 import { parsePing } from "../server/src/drivers.mjs";
 import { taskFor } from "../server/src/exercises.mjs";
+import { HELPER_VERSION, parseFacts, setupReport } from "../server/src/setup.mjs";
 
 const ring = () => buildTopology({ name: "ring4", template: "ring", size: 4, routing: "ospf" });
 
@@ -96,4 +98,38 @@ test("an addressed lab still renders addresses and routed cEOS ports", () => {
   assert.match(renderStartupConfig(t, t.nodes[0]), /interface lo\n ip address 10\.255\.0\.1\/32/);
   assert.match(renderStartupConfig(t, t.nodes[2]), /ip routing[^]*no switchport\n   ip address 10\.2\.3\.2\/30/);
   assert.equal(describeTopology(t).links[0], "r1 eth1 10.1.2.1  <->  r2 eth1 10.1.2.2   (10.1.2.0/30)");
+});
+
+test("check_setup stops at the first blocking problem and names the fix", () => {
+  const facts = parseFacts([
+    `helper_version=${HELPER_VERSION}`, "docker=28.5.2", "containerlab=0.80.0", "lab_storage=ok", "labs_defined=2", "labs_max=6",
+    "memory_available_mb=10641", "frr_image=lab-dojo/frr:10.7.1", "ceos_image=",
+  ].join("\n"));
+  const failed = (r) => r.checks.filter((c) => !c.ok && !c.optional).map((c) => c.check);
+
+  assert.deepEqual(failed(setupReport(undefined)), ["VM address"]);
+  assert.deepEqual(failed(setupReport("me@vm", null, { exitCode: 255, message: "Permission denied" })), ["SSH to the VM"]);
+  assert.deepEqual(failed(setupReport("me@vm", null, { message: "timed out" })), ["SSH to the VM"]);
+
+  const missing = setupReport("me@vm", null, { exitCode: 127, message: "No such file" });
+  assert.deepEqual(failed(missing), ["Helper on the VM"]);
+  assert.match(missing.checks.at(-1).fix, /scp -r remote\/\. me@vm:.*\n.*install-remote\.sh/);
+  // A helper from before the doctor action refuses it; a newer one reports its own number.
+  assert.match(setupReport("me@vm", null, { exitCode: 2, refused: true }).checks.at(-1).detail, /an older version is installed/);
+  assert.equal(setupReport("me@vm", { ...facts, helper_version: "1" }).ready, false);
+
+  // cEOS is optional: without it the VM is ready, and the report says what that rules out.
+  const ok = setupReport("me@vm", facts);
+  assert.equal(ok.ready, true);
+  assert.deepEqual(failed(ok), []);
+  assert.match(ok.checks.at(-1).fix, /docker import/);
+  assert.deepEqual(ok.can_build, ["routed labs and exercises with FRR routers"]);
+  assert.equal(ok.not_available.length, 1);
+  assert.equal(setupReport("me@vm", { ...facts, ceos_image: "ceos:4.36.2F" }).can_build.length, 2);
+  assert.deepEqual(failed(setupReport("me@vm", { ...facts, frr_image: "", containerlab: "" })), ["Containerlab", "FRR router image"]);
+});
+
+test("the helper and the server agree on the helper version", () => {
+  const helper = readFileSync(new URL("../remote/clab-mcp-remote", import.meta.url), "utf8");
+  assert.equal(Number(/^HELPER_VERSION=(\d+)$/m.exec(helper)[1]), HELPER_VERSION);
 });

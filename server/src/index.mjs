@@ -16,6 +16,7 @@ import {
   createExercise, DIFFICULTIES, exerciseStatus, getHint, injectFault, resetExercise, validateExercise,
 } from "./exercises.mjs";
 import { checkLabName, emptyState, inspectLab, loadState, loadTopology, saveState, sleep } from "./lab.mjs";
+import { checkSetup } from "./setup.mjs";
 
 const server = new McpServer(
   { name: "lab-dojo", version: "0.2.0" },
@@ -23,6 +24,7 @@ const server = new McpServer(
     instructions: [
       "Containerlab network lab server (FRR and Arista cEOS routers on a remote VM).",
       "Layer 1 builds labs (create_topology -> deploy_topology), layer 2 inspects and changes routers, layer 3 runs troubleshooting exercises.",
+      "If a tool fails because the VM or its helper cannot be reached, or on first use, call check_setup: it reports what is missing and the command the user must run. Never install anything on the VM yourself.",
       "Assume no lab is running: call list_labs first. Before create_topology, ask the user about anything the request leaves open (node count, how nodes connect, frr or ceos, what is pre-configured, lab name), show the plan and wait for their go-ahead; never guess silently. 'I will do the routing' or 'just the connections' means routing `bare`. Layer 2 topics such as STP need ceos nodes and `bare`.",
       "Exercises are in tutor mode: a human learner troubleshoots. Anything under `tutor_only` must not be revealed to the learner unless they give up.",
       "Ask for explicit confirmation before destroy_topology. You reach router CLIs only through these tools; shell access is not available to you by design.",
@@ -95,6 +97,16 @@ async function deployLab(labName, topology, { waitReady: wait = true, timeoutSec
   return result;
 }
 
+// ======================================================================= setup
+
+tool(
+  "check_setup",
+  "Check that the VM is ready: SSH, the helper and its version, Docker, Containerlab, lab storage, and which router images are present (FRR is required, Arista cEOS is optional). Read-only. Each failed check carries a `fix`: a command for the user to run. Show it to them; never run installs yourself.",
+  {},
+  READ_ONLY,
+  async () => json(await checkSetup()),
+);
+
 // ======================================================= Layer 1: lab management
 
 tool("list_labs", "List lab definitions on the VM with node counts and how many containers are running.", {}, READ_ONLY,
@@ -106,7 +118,7 @@ tool(
     "Define a new lab from a template or an explicit node/link list. Addressing, OSPF/BGP configuration and Containerlab YAML are generated (raw YAML is not accepted, for safety).",
     `Templates: ${TEMPLATES.join(", ")}. Routing: ospf (area 0), ebgp (AS 65000+i per node), ibgp-ospf (OSPF underlay + iBGP full mesh AS 65000), none (addresses only, so the learner configures routing), bare (cabling only: no IP addresses at all; a bare cEOS link port is a default switchport, so use bare with ceos nodes for layer 2 labs such as STP or VLANs).`,
     "Addressing (not in bare): loopback 10.255.0.<i>/32; link between nodes i<j = 10.<i>.<j>.0/30; BGP modes add service prefix 172.16.<i>.0/24.",
-    "Kinds: frr (light, ~50 MB; OSPFv2/v3, BGP, IS-IS, RIP, BFD, VRRP and static routing daemons run) or ceos (Arista cEOS, ~1.5 GB RAM each, max 6 per lab).",
+    "Kinds: frr (light, ~50 MB; OSPFv2/v3, BGP, IS-IS, RIP, BFD, VRRP and static routing daemons run) or ceos (Arista cEOS, ~1.5 GB RAM each, max 6 per lab; optional: only when check_setup lists a cEOS image).",
   ].join(" "),
   {
     name: z.string().describe("New lab name: lowercase letters, digits, '-', max 20 chars."),
@@ -532,7 +544,7 @@ tool(
 // unquoted request arrives as its first word only. CUT_SHORT covers that case.
 const CUT_SHORT = "If that request looks cut short (a single word), the client split it: the whole text I typed after the command is the request.";
 const BUILD_STEPS = [
-  "a. Call list_labs first. Assume nothing is running, and check the limits: 16 nodes and 6 cEOS per lab, 8 cEOS running on the VM, 6 lab definitions.",
+  "a. Call list_labs and check_setup first. Assume nothing is running. Build only with what the VM has (cEOS is optional and may be missing), within the limits: 16 nodes and 6 cEOS per lab, 8 cEOS running on the VM, 6 lab definitions. If check_setup is not ready, show its fixes and stop.",
   "b. Before building, look for gaps in the request. These must all be known: how many nodes; how they connect (line, ring, full-mesh, star, leaf-spine, or explicit links); the kind of each node (frr or ceos); what is pre-configured (working routing: ospf, ebgp or ibgp-ospf; `none`: IP addresses only; `bare`: cabling only, no IP addresses); and the lab name. Ask me about everything that is missing or unclear in one message, and do not guess silently. If nothing is missing, skip the questions.",
   "   - 'I will do the routing' or 'just the connections' means `bare`.",
   "   - Layer 2 topics (STP, VLANs, switching) need ceos nodes and `bare`: a bare cEOS link port is a default switchport.",
@@ -542,6 +554,26 @@ const BUILD_STEPS = [
 ];
 
 const request = (example) => z.string().describe(`What you want, in your own words, e.g. "${example}".`);
+
+server.registerPrompt(
+  "init",
+  { description: "First-time setup: check the VM and its images, and get the exact commands for anything missing." },
+  () => ({
+    messages: [{
+      role: "user",
+      content: {
+        type: "text",
+        text: [
+          "Check that lab-dojo is ready to use.",
+          "1. Call check_setup and show the result as a table: check, result.",
+          "2. For every failed check, show its `fix` in a code block for me to run. Do not run installs or change the VM yourself. After I say I ran them, call check_setup again.",
+          "3. Say plainly what I can build now and what is not available (from can_build and not_available), with the memory left on the VM.",
+          "4. If everything required passes, suggest a first command, e.g. /mcp__lab-dojo__build_lab \"3 routers in a ring with OSPF\".",
+        ].join("\n"),
+      },
+    }],
+  }),
+);
 
 server.registerPrompt(
   "build_lab",

@@ -13,11 +13,13 @@ set -euo pipefail
 umask 022
 export LC_ALL=C
 
+# Raise this whenever an action or its output changes. The MCP server compares
+# it with its own number, so an install that was not rerun is noticed.
+HELPER_VERSION=2
 STATE_ROOT=/var/lib/containerlab-mcp
 LABS="$STATE_ROOT/labs"
 # Built by install-remote.sh from remote/frr (stock FRR plus lab-start and lab-netdev-sync).
 FRR_IMAGE=lab-dojo/frr:10.7.1
-CEOS_IMAGE=ceos:4.36.2F
 LINK_MTU=1500
 MAX_LABS=6
 MAX_NODES=16
@@ -69,6 +71,12 @@ valid_ip_literal() {
   # IPv6-like characters only, never a hostname or option. ping performs the
   # final IPv6 syntax validation.
   [[ $value == *:* && $value =~ ^[0-9A-Fa-f:.]+$ ]]
+}
+
+# Arista images need a sign-in, so the user imports one as ceos:<version>.
+# cEOS is optional and any version works: the newest one present is used.
+ceos_image() {
+  docker images --format '{{.Repository}}:{{.Tag}}' ceos | grep -E '^ceos:[A-Za-z0-9._-]+$' | sort -V | tail -n 1 || true
 }
 
 read_stdin() {
@@ -178,7 +186,7 @@ list_labs() {
 
 create_lab() {
   valid_lab_name "${1:-}" || die 'invalid lab name'
-  local lab=$1 dir="$LABS/$1" tmp verb a b c d extra node count ceos=0 spec
+  local lab=$1 dir="$LABS/$1" tmp verb a b c d extra node count ceos=0 ceos_img='' spec
   local -A kinds=() used=()
   local -a order=() links=()
   [[ -d $LABS ]] || die "$LABS is missing; run install-remote.sh"
@@ -213,6 +221,10 @@ create_lab() {
   done <<< "$spec"
   ((${#order[@]} >= 1 && ${#order[@]} <= MAX_NODES)) || die "a lab needs 1-$MAX_NODES nodes"
   ((ceos <= MAX_CEOS_PER_LAB)) || die "at most $MAX_CEOS_PER_LAB cEOS nodes per lab"
+  if ((ceos)); then
+    ceos_img=$(ceos_image)
+    [[ -n $ceos_img ]] || die 'this VM has no cEOS image; import one as ceos:<version> (see README), or use frr nodes'
+  fi
   ((${#links[@]} <= MAX_LINKS)) || die "at most $MAX_LINKS links per lab"
 
   tmp="$LABS/.tmp-$lab-$$"
@@ -239,7 +251,7 @@ create_lab() {
         printf '        - configs/%s/vtysh.conf:/etc/frr/vtysh.conf\n' "$node"
       else
         printf 'hostname %s\n' "$node" > "$tmp/configs/$node/startup.partial.cfg"
-        printf '    %s:\n      kind: arista_ceos\n      image: %s\n' "$node" "$CEOS_IMAGE"
+        printf '    %s:\n      kind: arista_ceos\n      image: %s\n' "$node" "$ceos_img"
         printf '      startup-config: configs/%s/startup.partial.cfg\n' "$node"
       fi
     done
@@ -290,7 +302,7 @@ deploy() {
   local wanted running
   ! lab_running || die "lab $LAB is already deployed"
   wanted=$(grep -lx ceos "$LAB_DIR"/nodes/* 2>/dev/null | wc -l || true)
-  running=$(docker ps -q --filter "ancestor=$CEOS_IMAGE" | wc -l)
+  running=$(docker ps -q --filter label=clab-node-kind=arista_ceos | wc -l)
   ((wanted + running <= MAX_CEOS_RUNNING)) ||
     die "deploying would run $((wanted + running)) cEOS nodes; the VM limit is $MAX_CEOS_RUNNING"
   cd "$LAB_DIR"
@@ -313,6 +325,20 @@ inspect_lab() {
   docker inspect --format \
     '{{index .Config.Labels "clab-node-name"}}	{{.State.Status}}	{{.State.StartedAt}}	{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
     $ids
+}
+
+# One "key=value" line per fact, for the MCP server's check_setup. An empty
+# value means missing. Read-only.
+doctor() {
+  printf 'helper_version=%s\n' "$HELPER_VERSION"
+  printf 'docker=%s\n' "$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
+  printf 'containerlab=%s\n' "$(clab version 2>/dev/null | sed -n 's/^ *version: *//p' || true)"
+  printf 'lab_storage=%s\n' "$([[ -d $LABS && -w $LABS ]] && printf ok || true)"
+  printf 'labs_defined=%s\n' "$(find "$LABS" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null | wc -l)"
+  printf 'labs_max=%s\n' "$MAX_LABS"
+  printf 'memory_available_mb=%s\n' "$(awk '/^MemAvailable/ {print int($2 / 1024)}' /proc/meminfo)"
+  printf 'frr_image=%s\n' "$(docker image inspect "$FRR_IMAGE" >/dev/null 2>&1 && printf '%s' "$FRR_IMAGE" || true)"
+  printf 'ceos_image=%s\n' "$(ceos_image)"
 }
 
 meta_key() {
@@ -541,6 +567,7 @@ traceroute_node() {
 action=${1:-}
 (($# > 0)) && shift
 case "$action" in
+  doctor) (($# == 0)) || die 'invalid arguments'; doctor ;;
   list-labs) (($# == 0)) || die 'invalid arguments'; list_labs ;;
   create-lab) (($# == 1)) || die 'invalid arguments'; create_lab "$1" ;;
   put-config) (($# == 2)) || die 'invalid arguments'; put_config "$1" "$2" ;;

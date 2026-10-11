@@ -2,10 +2,11 @@
 # Table test for check_line in remote/clab-mcp-remote: the filter every router
 # configuration line passes before it reaches a privileged container.
 # The helper needs bash 4+. macOS ships 3.2, so there this re-runs itself on the
-# lab VM, which sees the Mac's files at the same path (OrbStack).
+# lab VM, which must see this folder at the same path (OrbStack machines do).
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 if ((BASH_VERSINFO[0] < 4)); then
-  exec ssh -n -T -o BatchMode=yes "${CONTAINERLAB_SSH_TARGET:-containerlab-server@orb}" bash "$(printf %q "$here/check-line.sh")"
+  : "${CONTAINERLAB_SSH_TARGET:?this test needs bash 4+. Set CONTAINERLAB_SSH_TARGET to rerun it on the lab VM, or run it on Linux}"
+  exec ssh -n -T -o BatchMode=yes "$CONTAINERLAB_SSH_TARGET" bash "$(printf %q "$here/check-line.sh")"
 fi
 
 source "$here/../remote/clab-mcp-remote"

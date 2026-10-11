@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 
-export const sshTarget = process.env.CONTAINERLAB_SSH_TARGET ?? "containerlab-server@orb";
+// user@host of the lab VM. There is no default: every setup has its own.
+export const sshTarget = process.env.CONTAINERLAB_SSH_TARGET;
 const remoteHelper = process.env.CONTAINERLAB_REMOTE_HELPER ?? "/usr/local/libexec/clab-mcp-remote";
 // Reusing one SSH connection keeps multi-node snapshots fast. The socket path
 // must stay short (Unix sockets are limited to ~104 bytes on macOS).
@@ -40,6 +41,7 @@ function shellQuote(value) {
  * stdin.
  */
 export function remote(action, args = [], { input, timeout = 60_000 } = {}) {
+  if (!sshTarget) return Promise.reject(new Error("CONTAINERLAB_SSH_TARGET is not set. Run check_setup for the steps."));
   const sshArgs = [
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=10",
@@ -80,7 +82,8 @@ export function remote(action, args = [], { input, timeout = 60_000 } = {}) {
         return;
       }
       const detail = [cleanErr, stripAnsi(stdout).trim()].filter(Boolean).join("\n").slice(-4000);
-      reject(new Error(`Containerlab request failed (${action}, exit ${code}). ${detail}`));
+      // exitCode lets check_setup tell "cannot connect" (255) from "helper not installed" (127).
+      reject(Object.assign(new Error(`Containerlab request failed (${action}, exit ${code}). ${detail}`), { exitCode: code }));
     });
     child.stdin.on("error", () => {});
     child.stdin.end(input ?? "");
