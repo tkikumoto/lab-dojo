@@ -23,7 +23,7 @@ Tool annotations mark read-only tools (`readOnlyHint`) and destructive ones (`de
 | Layer | Tool | Purpose |
 |---|---|---|
 | 1 Lab | `list_labs` | Lab definitions and running container counts |
-| | `create_topology` | Template (`line`, `ring`, `full-mesh`, `star`, `leaf-spine`) or explicit nodes/links; routing `ospf`, `ebgp`, `ibgp-ospf` or `none`; FRR, cEOS or mixed (`node_kinds`) |
+| | `create_topology` | Template (`line`, `ring`, `full-mesh`, `star`, `leaf-spine`) or explicit nodes/links; routing `ospf`, `ebgp`, `ibgp-ospf`, `none` (addresses only) or `bare` (cabling only); FRR, cEOS or mixed (`node_kinds`) |
 | | `deploy_topology` | Deploy and wait until every router has loaded its config; returns the access details below |
 | | `destroy_topology` | Remove containers; optionally delete the definition (confirm first) |
 | | `get_topology` | Design view: addressing, links, BGP sessions, node state |
@@ -42,7 +42,26 @@ Tool annotations mark read-only tools (`readOnlyHint`) and destructive ones (`de
 | | `reset_exercise` | `baseline`, `retry` (same faults again) or revert a single `fault_id` |
 | | `get_exercise_status` | Status, attempts, hints used, tutor-only solutions |
 
-MCP prompts appear as slash commands in Claude Code: `/mcp__lab-dojo__tutor_exercise` and `/mcp__lab-dojo__troubleshoot_lab`.
+### Slash commands
+
+MCP prompts appear as slash commands in Claude Code. Claude Code adds the `mcp__lab-dojo__` prefix; type `/` and the first letters to pick one.
+
+| Command | Argument | What it does |
+|---|---|---|
+| `/mcp__lab-dojo__build_lab` | what you want, in your own words | Builds and deploys a lab. Claude first asks about anything the description leaves open, shows the plan, and waits for your go-ahead. |
+| `/mcp__lab-dojo__exercise` | a lab name or a lab description, and optionally `easy`, `medium` or `hard` | Runs a troubleshooting exercise with Claude as tutor, on an existing lab or one built the same way as `build_lab`. |
+| `/mcp__lab-dojo__troubleshoot_lab` | lab name | Claude diagnoses the lab bottom-up and explains what it finds. |
+
+```text
+/mcp__lab-dojo__build_lab "4 routers in a full mesh, I will do the routing"
+/mcp__lab-dojo__build_lab "I want to practice STP"
+/mcp__lab-dojo__exercise "eBGP lab with 4 routers, medium"
+/mcp__lab-dojo__exercise "mix easy"
+```
+
+Put the request in quotes. Claude Code splits unquoted text on spaces and passes only the first word; the commands tell Claude to read the full text you typed in that case, so a forgotten quote still works in Claude Code.
+
+Nothing is assumed to be running: every flow starts by listing the labs on the VM. The same rules apply when you ask in plain words without a slash command.
 
 ### Access details
 
@@ -87,6 +106,8 @@ Every generated lab uses the same scheme, so learners can reason about addresses
   - eBGP uses AS `65000+i` per node, and iBGP uses AS 65000 on every node.
 - **OSPF:** OSPF links are point-to-point.
 - **MTU:** every link is set to MTU 1500, so FRR and cEOS adjacencies come up.
+
+Routing `none` keeps this addressing and configures no routing protocol. Routing `bare` configures no addresses at all: only the cabling and interface descriptions. A bare cEOS link port stays a default switchport, so a bare lab of cEOS nodes is the layer 2 lab (STP, VLANs). Health checks on a bare lab cover the links only, and exercises offer only cable faults.
 
 ### Fault catalogue
 

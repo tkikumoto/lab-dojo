@@ -3,7 +3,7 @@
 // passes, not just the one the exercise author had in mind.
 import { remote } from "./remote.mjs";
 import { getBgpSummary, getInterfaces, getOspfNeighbors, getRoutes, parsePing } from "./drivers.mjs";
-import { loopbackLabel, nodeByName, osIfName, toEth, usesBgp, usesOspf } from "./topology.mjs";
+import { isBare, loopbackLabel, nodeByName, osIfName, toEth, usesBgp, usesOspf } from "./topology.mjs";
 
 async function settle(promise) {
   try {
@@ -175,7 +175,8 @@ export async function runExtraCheck(lab, topology, spec) {
 export async function evaluateHealth(lab, topology, { extraChecks = [], snapshot } = {}) {
   const [snap, reach, extra] = await Promise.all([
     snapshot ?? collectSnapshot(lab, topology),
-    collectReachability(lab, topology),
+    // A bare lab has no addresses to ping; its design promises only the cabling.
+    isBare(topology) ? null : collectReachability(lab, topology),
     Promise.all(extraChecks.map((spec) => runExtraCheck(lab, topology, spec)
       .catch((error) => check(`extra:${spec.type}`, `${spec.type} check could not run`, false, error.message)))),
   ]);
@@ -184,7 +185,7 @@ export async function evaluateHealth(lab, topology, { extraChecks = [], snapshot
     ...(usesOspf(topology) ? evaluateOspf(topology, snap) : []),
     ...evaluateBgpSessions(topology, snap),
     ...(usesBgp(topology) ? evaluateBgpRoutes(topology, snap) : []),
-    ...evaluateReachability(topology, reach),
+    ...(reach ? evaluateReachability(topology, reach) : []),
     ...extra,
   ];
   const failed = checks.filter((c) => !c.ok);

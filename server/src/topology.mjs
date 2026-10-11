@@ -7,10 +7,12 @@
 //   service prefix   172.16.i.0/24 (BGP modes only, on a loopback)
 //   link i<->j       10.i.j.(4k)/30, lower index gets .1, k = parallel link number
 //   ASN              65000+i for eBGP, 65000 everywhere for iBGP
+// Routing "bare" is cabling only: no loopback and no link addresses. A bare cEOS
+// link port stays a default switchport, so bare is also the layer 2 lab.
 
 export const KINDS = ["frr", "ceos"];
 export const TEMPLATES = ["line", "ring", "full-mesh", "star", "leaf-spine"];
-export const ROUTING_MODES = ["ospf", "ebgp", "ibgp-ospf", "none"];
+export const ROUTING_MODES = ["ospf", "ebgp", "ibgp-ospf", "none", "bare"];
 export const LIMITS = { nodes: 16, ceosPerLab: 6, fullMesh: 8, spines: 4, leaves: 8, links: 48 };
 
 const NAME_RE = /^[a-z][a-z0-9-]{0,14}$/;
@@ -24,6 +26,10 @@ export function usesOspf(topology) {
 
 export function usesBgp(topology) {
   return topology.routing === "ebgp" || topology.routing === "ibgp-ospf";
+}
+
+export function isBare(topology) {
+  return topology.routing === "bare";
 }
 
 /** Maps eth1 / Ethernet1 / et1 to the Containerlab name eth1. */
@@ -120,6 +126,7 @@ export function buildTopology(input) {
   }
   if (base.links.length > LIMITS.links) throw new Error(`at most ${LIMITS.links} links per lab`);
 
+  const bare = routing === "bare";
   const nodes = base.nodes.map((n, i) => {
     if (!NAME_RE.test(n.name)) throw new Error(`invalid node name ${n.name}: lowercase letters, digits and '-', max 15`);
     if (RESERVED_NAME_RE.test(n.name)) {
@@ -131,7 +138,7 @@ export function buildTopology(input) {
       name: n.name,
       kind: n.kind,
       index,
-      loopback: `10.255.0.${index}`,
+      loopback: bare ? undefined : `10.255.0.${index}`,
       asn: routing === "ebgp" ? 65000 + index : routing === "ibgp-ospf" ? 65000 : undefined,
       service_prefix: routing === "ebgp" || routing === "ibgp-ospf" ? `172.16.${index}.0/24` : undefined,
       interfaces: [],
@@ -156,15 +163,16 @@ export function buildTopology(input) {
     parallel.set(key, k + 1);
     if (k >= 64) throw new Error(`too many parallel links between ${a.name} and ${b.name}`);
     const base4 = 4 * k;
-    const subnet = `10.${a.index}.${b.index}.${base4}/30`;
+    const subnet = bare ? undefined : `10.${a.index}.${b.index}.${base4}/30`;
     const ends = [[a, b, base4 + 1], [b, a, base4 + 2]].map(([node, , host]) => ({
       node: node.name,
       interface: `eth${node.interfaces.length + 1}`,
-      ip: `10.${a.index}.${b.index}.${host}`,
+      ip: bare ? undefined : `10.${a.index}.${b.index}.${host}`,
     }));
     if (ends.some((end) => Number(end.interface.slice(3)) > 99)) throw new Error("too many links on one node");
-    a.interfaces.push({ name: ends[0].interface, ip: ends[0].ip, prefix_len: 30, link: id, peer: ends[1] });
-    b.interfaces.push({ name: ends[1].interface, ip: ends[1].ip, prefix_len: 30, link: id, peer: ends[0] });
+    const prefix_len = bare ? undefined : 30;
+    a.interfaces.push({ name: ends[0].interface, ip: ends[0].ip, prefix_len, link: id, peer: ends[1] });
+    b.interfaces.push({ name: ends[1].interface, ip: ends[1].ip, prefix_len, link: id, peer: ends[0] });
     return { id, subnet, a: ends[0], b: ends[1] };
   });
 
@@ -223,11 +231,14 @@ function bgpNetworks(topology, node) {
 
 function renderFrr(topology, node) {
   const out = ["frr defaults traditional", `hostname ${node.name}`, "service integrated-vtysh-config", "!"];
-  out.push("interface lo", ` ip address ${node.loopback}/32`);
-  if (node.service_prefix) out.push(` ip address ${node.service_prefix.replace(/0\/24$/, "1/24")}`);
-  out.push("exit", "!");
+  if (node.loopback) {
+    out.push("interface lo", ` ip address ${node.loopback}/32`);
+    if (node.service_prefix) out.push(` ip address ${node.service_prefix.replace(/0\/24$/, "1/24")}`);
+    out.push("exit", "!");
+  }
   for (const intf of node.interfaces) {
-    out.push(`interface ${intf.name}`, ` description to ${intf.peer.node} ${intf.peer.interface}`, ` ip address ${intf.ip}/30`);
+    out.push(`interface ${intf.name}`, ` description to ${intf.peer.node} ${intf.peer.interface}`);
+    if (intf.ip) out.push(` ip address ${intf.ip}/30`);
     if (usesOspf(topology)) out.push(" ip ospf network point-to-point");
     out.push("exit", "!");
   }
@@ -257,16 +268,16 @@ function renderFrr(topology, node) {
 }
 
 function renderCeos(topology, node) {
-  const out = [`hostname ${node.name}`, "ip routing", "!"];
-  out.push("interface Loopback0", `   ip address ${node.loopback}/32`, "!");
+  // Bare: no routing, and link ports stay default switchports (layer 2, STP runs).
+  const out = isBare(topology) ? [`hostname ${node.name}`, "!"] : [`hostname ${node.name}`, "ip routing", "!"];
+  if (node.loopback) out.push("interface Loopback0", `   ip address ${node.loopback}/32`, "!");
   if (node.service_prefix) out.push("interface Loopback1", `   ip address ${node.service_prefix.replace(/0\/24$/, "1/24")}`, "!");
   for (const intf of node.interfaces) {
     out.push(
       `interface ${osIfName("ceos", intf.name)}`,
       `   description to ${intf.peer.node} ${osIfName(nodeByName(topology, intf.peer.node).kind, intf.peer.interface)}`,
-      "   no switchport",
-      `   ip address ${intf.ip}/30`,
     );
+    if (intf.ip) out.push("   no switchport", `   ip address ${intf.ip}/30`);
     if (usesOspf(topology)) out.push("   ip ospf network point-to-point");
     out.push("!");
   }
@@ -301,7 +312,7 @@ export function cliCommand(topology, node) {
 export function linkInterfaces(topology, node) {
   return node.interfaces.map((i) => ({
     interface: osIfName(node.kind, i.name),
-    ip: `${i.ip}/${i.prefix_len}`,
+    ip: i.ip && `${i.ip}/${i.prefix_len}`,
     peer: i.peer.node,
     peer_interface: osIfName(nodeByName(topology, i.peer.node).kind, i.peer.interface),
   }));
@@ -331,19 +342,24 @@ export function describeTopology(topology) {
     name: topology.name,
     template: topology.template,
     routing: topology.routing,
-    addressing_plan: "loopback 10.255.0.<i>/32; link between node i<j uses 10.<i>.<j>.0/30 (lower index .1)"
-      + (usesBgp(topology) ? "; service prefix 172.16.<i>.0/24 on a loopback, advertised in BGP" : ""),
+    addressing_plan: isBare(topology)
+      ? "none: cabling only, no IP addresses. cEOS link ports are default switchports (layer 2); FRR link ports are unconfigured."
+      : "loopback 10.255.0.<i>/32; link between node i<j uses 10.<i>.<j>.0/30 (lower index .1)"
+        + (usesBgp(topology) ? "; service prefix 172.16.<i>.0/24 on a loopback, advertised in BGP" : ""),
     nodes: topology.nodes.map((n) => ({
       name: n.name,
       kind: n.kind,
-      loopback: `${n.loopback}/32`,
+      ...(n.loopback ? { loopback: `${n.loopback}/32` } : {}),
       ...(n.asn ? { asn: n.asn } : {}),
       ...(n.service_prefix ? { service_prefix: n.service_prefix } : {}),
     })),
     links: topology.links.map((l) => {
       const a = nodeByName(topology, l.a.node);
       const b = nodeByName(topology, l.b.node);
-      return `${l.a.node} ${osIfName(a.kind, l.a.interface)} ${l.a.ip}  <->  ${l.b.node} ${osIfName(b.kind, l.b.interface)} ${l.b.ip}   (${l.subnet})`;
+      const [ifA, ifB] = [osIfName(a.kind, l.a.interface), osIfName(b.kind, l.b.interface)];
+      return l.subnet
+        ? `${l.a.node} ${ifA} ${l.a.ip}  <->  ${l.b.node} ${ifB} ${l.b.ip}   (${l.subnet})`
+        : `${l.a.node} ${ifA}  <->  ${l.b.node} ${ifB}`;
     }),
     ...(topology.bgp_sessions.length
       ? { bgp_sessions: topology.bgp_sessions.map((s) => `${s.a} ${s.a_ip} <-> ${s.b} ${s.b_ip} (${s.type})`) }
