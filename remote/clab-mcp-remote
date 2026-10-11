@@ -124,7 +124,10 @@ check_line() {
   ((${#line} <= 240)) || die 'configuration line longer than 240 characters'
   [[ $line =~ ^[[:print:]]*$ ]] || die 'configuration lines must be printable ASCII'
   case $line in
-    *'|'* | *'>'* | *'<'* | *'`'* | *'$('* | *';'*) die "forbidden character in line: $line" ;;
+    *'|'* | *'>'* | *'<'* | *'`'* | *'$('* | *';'* | *'&'*) die "forbidden character in line: $line" ;;
+    # Router configuration needs no file path. An address such as 10.1.2.1/30
+    # has no space before its slash, so it still passes.
+    /* | *' /'*) die "refused line (file paths are not allowed): $line" ;;
   esac
   lower=${line,,}
   for word in "${DENY_SUBSTRINGS[@]}"; do
@@ -338,7 +341,9 @@ ready() {
   require_lab "${1:-}"
   require_node "${2:-}"
   require_running
-  if cli 'show running-config' 2>/dev/null | grep -qx "hostname $NODE"; then
+  # Not grep -q: it stops reading at the first match, and under pipefail the
+  # broken pipe would then report a ready router as booting.
+  if cli 'show running-config' 2>/dev/null | grep -x "hostname $NODE" >/dev/null; then
     printf 'ready\n'
   else
     printf 'booting\n'
@@ -529,6 +534,9 @@ traceroute_node() {
   require_running
   docker exec "$CONTAINER" traceroute "${args[@]}" "$3" 2>&1 || true
 }
+
+# Sourced (by tests/check-line.sh): define the functions, run nothing.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
 
 action=${1:-}
 (($# > 0)) && shift

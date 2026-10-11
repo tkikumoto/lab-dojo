@@ -147,6 +147,8 @@ export async function createExercise(lab, topology, state, opts) {
       if (!nodesTouched(plan.actions).some((n) => usedNodes.has(n))) break;
     }
     const fault = await injectFault(lab, topology, state, { type, params: plan.params, exerciseId: id });
+    // Record it at once: if a later step fails, the fault is still known and can be reverted.
+    await saveState(lab, state);
     nodesTouched(fault.actions).forEach((n) => usedNodes.add(n));
     faults.push(fault);
   }

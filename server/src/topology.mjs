@@ -14,6 +14,8 @@ export const ROUTING_MODES = ["ospf", "ebgp", "ibgp-ospf", "none"];
 export const LIMITS = { nodes: 16, ceosPerLab: 6, fullMesh: 8, spines: 4, leaves: 8, links: 48 };
 
 const NAME_RE = /^[a-z][a-z0-9-]{0,14}$/;
+// 'all' and 'loopback' are tool keywords; the VM helper refuses config lines containing the other words.
+const RESERVED_NAME_RE = /^(all|loopback)$|bash|shell|python|sudo/;
 export const LAB_NAME_RE = /^[a-z][a-z0-9-]{0,19}$/;
 
 export function usesOspf(topology) {
@@ -120,6 +122,9 @@ export function buildTopology(input) {
 
   const nodes = base.nodes.map((n, i) => {
     if (!NAME_RE.test(n.name)) throw new Error(`invalid node name ${n.name}: lowercase letters, digits and '-', max 15`);
+    if (RESERVED_NAME_RE.test(n.name)) {
+      throw new Error(`node name ${n.name} is reserved: not 'all' or 'loopback', and no bash, shell, python or sudo in the name`);
+    }
     if (!KINDS.includes(n.kind)) throw new Error(`node ${n.name}: kind must be frr or ceos`);
     const index = i + 1;
     return {

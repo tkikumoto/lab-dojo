@@ -11,7 +11,7 @@ The VM helper is the trust boundary. It re-validates every request, even though 
 - **No raw Containerlab YAML.** `create_topology` takes a template or a node/link list. The helper renders the YAML itself with fixed images and fixed bind mounts, so there are no host paths, `exec:` hooks or host networking.
 - **FRR's `daemons` file is generated, never accepted.** FRR's init script sources it as shell.
 - **`exec_cli` accepts plain `show …` only:** `^show( [A-Za-z0-9./:_,=+-]+)*$`. Pipes and redirects are refused. Testing showed that `show version | bash id` really executes on cEOS.
-- **`configure_device` lines are screened by first word, abbreviations included.** Both CLIs accept abbreviations, so `ev` (for `event-handler`), `st`, `en` and `wr` are refused too. Refused words: `do`, `end`, `exit`, `start-shell`, `write`, `copy`, `bash`, `event-handler`, `alias`, `schedule`, `daemon`, `extension`, `python…` and similar. Lines containing `bash`, `shell`, `python` or `/bin/`, and any `|`, `>`, `<`, backtick, `;` or `$(`, are also refused.
+- **`configure_device` lines are screened by first word, abbreviations included.** Both CLIs accept abbreviations, so `ev` (for `event-handler`), `st`, `en` and `wr` are refused too. Refused words: `do`, `end`, `exit`, `start-shell`, `write`, `copy`, `bash`, `event-handler`, `alias`, `schedule`, `daemon`, `extension`, `python…` and similar. Lines containing `bash`, `shell`, `python` or `/bin/`, any `|`, `>`, `<`, `&`, backtick, `;` or `$(`, and any file path (an argument that starts with `/`) are also refused.
 - **Strict argument validation.** Names, interfaces (`eth1+`; `eth0` is management), IP literals and numeric ranges are all validated, so option injection such as `ping -f` is impossible.
 - **The FRR device watcher stays inside the node.** It creates devices only in that router's own network namespace, from interface names it validates, never through a shell and never on the management interface `eth0`.
 - **Resource caps.** At most 16 nodes per lab, 6 cEOS per lab, 8 cEOS running on the VM, and 6 lab definitions.
@@ -149,7 +149,10 @@ Validate my fix.
 ```bash
 npm install
 npm run check   # node --check on every module + bash -n on the remote scripts
+npm test        # topology, fault targeting and ping parsing, then the helper's config-line filter
 ```
+
+The filter test (`tests/check-line.sh`) needs bash 4 or newer. On macOS it runs itself on the VM over SSH, reading the helper from this folder, so it tests your working copy and not the installed helper.
 
 `npm start` waits for MCP JSON-RPC on stdin; this is expected.
 

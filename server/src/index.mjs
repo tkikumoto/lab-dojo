@@ -456,6 +456,7 @@ tool(
   },
   CHANGES_LAB,
   async ({ lab: labName, type, node, interface: intf, peer, add_to_exercise: attach }) => {
+    if (!node && (intf || peer)) throw new Error("give `node` together with `interface` or `peer`; without it the target is random");
     const { topology } = await context(labName);
     const state = await loadState(labName);
     const params = node ? { node, ...(intf ? { interface: toEth(intf) ?? intf } : {}), ...(peer ? { peer } : {}) } : undefined;
