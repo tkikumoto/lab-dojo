@@ -48,6 +48,9 @@ export async function collectReachability(lab, topology) {
   return results;
 }
 
+// `description` says what is wrong, e.g. "BGP session r2 <-> r3 (ibgp) is down":
+// it is only ever shown for a failed check. It names the symptom, never the
+// measured state; that goes in `detail`, which learners do not see.
 function check(id, description, ok, detail) {
   return { id, description, ok, ...(detail && !ok ? { detail } : {}) };
 }
@@ -63,7 +66,7 @@ function evaluateLinks(topology, snapshot) {
     const bad = ends.filter((e) => !e.intf || e.intf.oper !== "up" || e.intf.admin !== "up");
     return check(
       `link:${link.a.node}:${link.a.interface}`,
-      `link ${ends[0].label} <-> ${ends[1].label} is up`,
+      `Link ${ends[0].label} <-> ${ends[1].label} is down`,
       bad.length === 0,
       bad.map((e) => `${e.label}: ${e.intf ? `admin ${e.intf.admin}, oper ${e.intf.oper}` : "not found"}`).join("; "),
     );
@@ -80,7 +83,7 @@ function evaluateOspf(topology, snapshot) {
     });
     return check(
       `ospf:${link.a.node}:${link.a.interface}`,
-      `OSPF adjacency ${link.a.node} <-> ${link.b.node} on ${link.subnet} is full`,
+      `OSPF adjacency ${link.a.node} <-> ${link.b.node} on ${link.subnet} is not full`,
       sides.every((s) => s.state === "full"),
       sides.map((s) => `${s.self.node} sees ${s.peer.name}: ${s.state}`).join("; "),
     );
@@ -96,7 +99,7 @@ function evaluateBgpSessions(topology, snapshot) {
     });
     const ok = [[s.a, s.b_ip], [s.b, s.a_ip]].every(([node, ip]) =>
       snapshot[node]?.bgp?.peers?.find((p) => p.peer === ip)?.state === "established");
-    return check(`bgp:${s.a}:${s.b_ip}`, `BGP session ${s.a} <-> ${s.b} (${s.type}) is established`, ok, sides.join("; "));
+    return check(`bgp:${s.a}:${s.b_ip}`, `BGP session ${s.a} <-> ${s.b} (${s.type}) is down`, ok, sides.join("; "));
   });
 }
 
@@ -109,7 +112,7 @@ function evaluateBgpRoutes(topology, snapshot) {
       const route = Array.isArray(routes) ? routes.find((r) => r.prefix === other.service_prefix) : undefined;
       checks.push(check(
         `bgp-route:${node.name}:${other.service_prefix}`,
-        `${node.name} has a BGP route to ${other.name}'s service prefix ${other.service_prefix}`,
+        `${node.name} has no BGP route to ${other.name}'s service prefix ${other.service_prefix}`,
         route?.protocol === "bgp",
         route ? `selected route is ${route.protocol} via ${route.nexthops.join(", ")}` : "no route",
       ));
@@ -125,7 +128,7 @@ function evaluateReachability(topology, reach) {
       if (src === dst) continue;
       checks.push(check(
         `reach:${src.name}:${dst.name}`,
-        `ping from ${loopbackLabel(src)} to ${loopbackLabel(dst)} succeeds`,
+        `Ping from ${loopbackLabel(src)} to ${loopbackLabel(dst)} fails`,
         reach[`${src.name}>${dst.loopback}`] === true,
         reach[`${src.name}:error`] ?? "ping from loopback failed",
       ));
@@ -143,10 +146,13 @@ export async function runExtraCheck(lab, topology, spec) {
     const result = parsePing(out);
     const lossOk = result.loss_percent <= (spec.max_loss_percent ?? 0);
     const rttOk = spec.max_avg_rtt_ms == null || (result.rtt_ms?.avg ?? Infinity) <= spec.max_avg_rtt_ms;
+    const problems = [
+      !lossOk && (spec.max_loss_percent ? `lose more than ${spec.max_loss_percent}% of packets` : "lose packets"),
+      !rttOk && `average over ${spec.max_avg_rtt_ms} ms`,
+    ].filter(Boolean).join(" and ");
     return check(
       `quality:${spec.from}:${spec.to}`,
-      `${spec.count} pings from ${loopbackLabel(src)} to ${loopbackLabel(dst)} with <= ${spec.max_loss_percent ?? 0}% loss`
-        + (spec.max_avg_rtt_ms != null ? ` and avg RTT <= ${spec.max_avg_rtt_ms} ms` : ""),
+      `${spec.count} pings from ${loopbackLabel(src)} to ${loopbackLabel(dst)} ${problems}`,
       lossOk && rttOk,
       `loss ${result.loss_percent}%, avg RTT ${result.rtt_ms?.avg ?? "n/a"} ms`,
     );
@@ -158,7 +164,7 @@ export async function runExtraCheck(lab, topology, spec) {
     const count = peer?.prefixes_accepted ?? peer?.prefixes_received ?? 0;
     return check(
       `bgp-prefixes:${spec.node}:${spec.peer}`,
-      `${spec.node} accepts at least ${spec.min} prefixes from BGP peer ${spec.peer}`,
+      `${spec.node} accepts ${spec.min === 1 ? "no" : `fewer than ${spec.min}`} prefixes from BGP peer ${spec.peer}`,
       peer?.state === "established" && count >= spec.min,
       peer ? `state ${peer.state}, ${count} prefixes accepted` : "peer not configured",
     );
@@ -171,7 +177,7 @@ export async function evaluateHealth(lab, topology, { extraChecks = [], snapshot
     snapshot ?? collectSnapshot(lab, topology),
     collectReachability(lab, topology),
     Promise.all(extraChecks.map((spec) => runExtraCheck(lab, topology, spec)
-      .catch((error) => check(`extra:${spec.type}`, spec.type, false, error.message)))),
+      .catch((error) => check(`extra:${spec.type}`, `${spec.type} check could not run`, false, error.message)))),
   ]);
   const checks = [
     ...evaluateLinks(topology, snap),
