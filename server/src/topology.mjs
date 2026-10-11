@@ -10,7 +10,9 @@
 // Routing "bare" is cabling only: no loopback and no link addresses. A bare cEOS
 // link port stays a default switchport, so bare is also the layer 2 lab.
 
-export const KINDS = ["frr", "ceos"];
+// A host is a Linux machine, not a router: it gets no generated addresses or
+// routing, has no router CLI, and the person using the lab configures it.
+export const KINDS = ["frr", "ceos", "host"];
 export const TEMPLATES = ["line", "ring", "full-mesh", "star", "leaf-spine"];
 export const ROUTING_MODES = ["ospf", "ebgp", "ibgp-ospf", "none", "bare"];
 export const LIMITS = { nodes: 16, ceosPerLab: 6, fullMesh: 8, spines: 4, leaves: 8, links: 48 };
@@ -30,6 +32,15 @@ export function usesBgp(topology) {
 
 export function isBare(topology) {
   return topology.routing === "bare";
+}
+
+export function isRouter(node) {
+  return node.kind !== "host";
+}
+
+/** Links with a router on both ends: the only ones routing, adjacencies and faults apply to. */
+export function routerLinks(topology) {
+  return topology.links.filter((l) => isRouter(nodeByName(topology, l.a.node)) && isRouter(nodeByName(topology, l.b.node)));
 }
 
 /** Maps eth1 / Ethernet1 / et1 to the Containerlab name eth1. */
@@ -110,7 +121,7 @@ export function buildTopology(input) {
 
   const base = input.template
     ? templateNodes(input)
-    : { nodes: input.nodes.map((n) => ({ name: n.name, kind: n.kind ?? input.kind ?? "frr" })), links: input.links ?? [] };
+    : { nodes: input.nodes.map((n) => ({ name: n.name, kind: n.kind ?? input.kind ?? "frr", image: n.image })), links: input.links ?? [] };
 
   for (const [name, kind] of Object.entries(input.node_kinds ?? {})) {
     const node = base.nodes.find((n) => n.name === name);
@@ -132,8 +143,14 @@ export function buildTopology(input) {
     if (RESERVED_NAME_RE.test(n.name)) {
       throw new Error(`node name ${n.name} is reserved: not 'all' or 'loopback', and no bash, shell, python or sudo in the name`);
     }
-    if (!KINDS.includes(n.kind)) throw new Error(`node ${n.name}: kind must be frr or ceos`);
+    if (!KINDS.includes(n.kind)) throw new Error(`node ${n.name}: kind must be one of ${KINDS.join(", ")}`);
     const index = i + 1;
+    if (n.kind === "host") {
+      if (n.image != null && !LAB_NAME_RE.test(n.image)) throw new Error(`node ${n.name}: image is the name of a registered image (see check_setup), not ${n.image}`);
+      if (input.extra_config?.[n.name]) throw new Error(`node ${n.name} is a host: it has no startup configuration`);
+      return { name: n.name, kind: n.kind, index, ...(n.image ? { image: n.image } : {}), interfaces: [], extra_config: [] };
+    }
+    if (n.image != null) throw new Error(`node ${n.name}: only a host node takes an image`);
     return {
       name: n.name,
       kind: n.kind,
@@ -167,22 +184,25 @@ export function buildTopology(input) {
     const ends = [[a, b, base4 + 1], [b, a, base4 + 2]].map(([node, , host]) => ({
       node: node.name,
       interface: `eth${node.interfaces.length + 1}`,
-      ip: bare ? undefined : `10.${a.index}.${b.index}.${host}`,
+      // A host end stays unset: the subnet and the router's end are generated, the host's address is the user's.
+      ip: bare || !isRouter(node) ? undefined : `10.${a.index}.${b.index}.${host}`,
     }));
     if (ends.some((end) => Number(end.interface.slice(3)) > 99)) throw new Error("too many links on one node");
-    const prefix_len = bare ? undefined : 30;
-    a.interfaces.push({ name: ends[0].interface, ip: ends[0].ip, prefix_len, link: id, peer: ends[1] });
-    b.interfaces.push({ name: ends[1].interface, ip: ends[1].ip, prefix_len, link: id, peer: ends[0] });
+    a.interfaces.push({ name: ends[0].interface, ip: ends[0].ip, prefix_len: ends[0].ip && 30, link: id, peer: ends[1] });
+    b.interfaces.push({ name: ends[1].interface, ip: ends[1].ip, prefix_len: ends[1].ip && 30, link: id, peer: ends[0] });
     return { id, subnet, a: ends[0], b: ends[1] };
   });
 
   const bgp_sessions = [];
+  const routers = nodes.filter(isRouter);
   if (routing === "ebgp") {
-    for (const link of links) bgp_sessions.push({ a: link.a.node, b: link.b.node, a_ip: link.a.ip, b_ip: link.b.ip, type: "ebgp" });
+    for (const link of links) {
+      if (link.a.ip && link.b.ip) bgp_sessions.push({ a: link.a.node, b: link.b.node, a_ip: link.a.ip, b_ip: link.b.ip, type: "ebgp" });
+    }
   } else if (routing === "ibgp-ospf") {
-    for (let i = 0; i < nodes.length; i += 1) {
-      for (let j = i + 1; j < nodes.length; j += 1) {
-        bgp_sessions.push({ a: nodes[i].name, b: nodes[j].name, a_ip: nodes[i].loopback, b_ip: nodes[j].loopback, type: "ibgp" });
+    for (let i = 0; i < routers.length; i += 1) {
+      for (let j = i + 1; j < routers.length; j += 1) {
+        bgp_sessions.push({ a: routers[i].name, b: routers[j].name, a_ip: routers[i].loopback, b_ip: routers[j].loopback, type: "ibgp" });
       }
     }
   }
@@ -201,7 +221,7 @@ export function buildTopology(input) {
 /** The line-oriented spec the VM helper turns into Containerlab YAML. */
 export function helperSpec(topology) {
   return [
-    ...topology.nodes.map((n) => `node ${n.name} ${n.kind}`),
+    ...topology.nodes.map((n) => `node ${n.name} ${n.kind}${n.image ? ` ${n.image}` : ""}`),
     ...topology.links.map((l) => `link ${l.a.node} ${l.a.interface} ${l.b.node} ${l.b.interface}`),
   ].join("\n") + "\n";
 }
@@ -299,13 +319,17 @@ function renderCeos(topology, node) {
   return out.join("\n");
 }
 
+/** The node's startup configuration, or null for a host, which has none. */
 export function renderStartupConfig(topology, node) {
+  if (!isRouter(node)) return null;
   return node.kind === "ceos" ? renderCeos(topology, node) : renderFrr(topology, node);
 }
 
 /** The command a human runs on the VM to open a node's CLI. */
 export function cliCommand(topology, node) {
-  return `docker exec -it clab-${topology.name}-${node.name} ${node.kind === "ceos" ? "Cli" : "vtysh"}`;
+  // The built-in host image has bash; another registered image may only have sh.
+  const cli = { ceos: "Cli", frr: "vtysh", host: node.image ? "sh" : "bash" }[node.kind];
+  return `docker exec -it clab-${topology.name}-${node.name} ${cli}`;
 }
 
 /** A node's link interfaces with the neighbour and neighbour interface each one faces (vendor names). */
@@ -349,6 +373,7 @@ export function describeTopology(topology) {
     nodes: topology.nodes.map((n) => ({
       name: n.name,
       kind: n.kind,
+      ...(n.image ? { image: n.image } : {}),
       ...(n.loopback ? { loopback: `${n.loopback}/32` } : {}),
       ...(n.asn ? { asn: n.asn } : {}),
       ...(n.service_prefix ? { service_prefix: n.service_prefix } : {}),
@@ -356,10 +381,9 @@ export function describeTopology(topology) {
     links: topology.links.map((l) => {
       const a = nodeByName(topology, l.a.node);
       const b = nodeByName(topology, l.b.node);
-      const [ifA, ifB] = [osIfName(a.kind, l.a.interface), osIfName(b.kind, l.b.interface)];
-      return l.subnet
-        ? `${l.a.node} ${ifA} ${l.a.ip}  <->  ${l.b.node} ${ifB} ${l.b.ip}   (${l.subnet})`
-        : `${l.a.node} ${ifA}  <->  ${l.b.node} ${ifB}`;
+      // An end without an address (bare lab, or a host) shows its interface only.
+      const end = (e, node) => `${e.node} ${osIfName(node.kind, e.interface)}${e.ip ? ` ${e.ip}` : ""}`;
+      return `${end(l.a, a)}  <->  ${end(l.b, b)}${l.subnet ? `   (${l.subnet})` : ""}`;
     }),
     ...(topology.bgp_sessions.length
       ? { bgp_sessions: topology.bgp_sessions.map((s) => `${s.a} ${s.a_ip} <-> ${s.b} ${s.b_ip} (${s.type})`) }

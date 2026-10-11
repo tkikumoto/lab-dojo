@@ -1,6 +1,6 @@
 # Lab Dojo
 
-An MCP server that lets Claude build, inspect and break network labs on a Containerlab VM, and run guided troubleshooting exercises with Claude as the tutor. Routers are FRR (`lab-dojo/frr:10.7.1`, the stock `quay.io/frrouting/frr:10.7.1` plus the [lab additions](#frr-lab-image) below) and, optionally, Arista cEOS. A single lab can mix both.
+An MCP server that lets Claude build, inspect and break network labs on a Containerlab VM, and run guided troubleshooting exercises with Claude as the tutor. Routers are FRR (`lab-dojo/frr:10.7.1`, the stock `quay.io/frrouting/frr:10.7.1` plus the [lab additions](#frr-lab-image) below) and, optionally, Arista cEOS. Labs can also hold Linux hosts. A single lab can mix all three.
 
 Your MCP client (for example Claude Code) launches the local Node server (`server/src/index.mjs`). The server reaches a Linux VM over SSH and calls one allowlisted helper there: `/usr/local/libexec/clab-mcp-remote`.
 
@@ -22,9 +22,10 @@ Router images:
 | Image | Needed | How it gets there |
 |---|---|---|
 | FRR lab image | Yes | The install script builds it from the public FRR image. |
+| Linux host image | Yes | The install script builds it from public Alpine Linux. |
 | Arista cEOS | No | Arista images need a sign-in, so you import one yourself: download cEOS-lab from arista.com, copy it to the VM and run `docker import cEOS64-lab-<version>.tar.xz ceos:<version>`. Any version works; the newest one present is used. |
 
-Without cEOS you can build every FRR lab and run every exercise. Arista nodes and layer 2 labs need it.
+Without cEOS you can build every FRR lab and run every exercise. Arista nodes and layer 2 labs need it. Other public Linux images can be added later; see [Hosts and extra images](#hosts-and-extra-images).
 
 ## Setup
 
@@ -55,6 +56,7 @@ The VM helper is the trust boundary. It re-validates every request, even though 
 - **`configure_device` lines are screened by first word, abbreviations included.** Both CLIs accept abbreviations, so `ev` (for `event-handler`), `st`, `en` and `wr` are refused too. Refused words: `do`, `end`, `exit`, `start-shell`, `write`, `copy`, `bash`, `event-handler`, `alias`, `schedule`, `daemon`, `extension`, `python…` and similar. Lines containing `bash`, `shell`, `python` or `/bin/`, any `|`, `>`, `<`, `&`, backtick, `;` or `$(`, and any file path (an argument that starts with `/`) are also refused.
 - **Strict argument validation.** Names, interfaces (`eth1+`; `eth0` is management), IP literals and numeric ranges are all validated, so option injection such as `ping -f` is impossible.
 - **The FRR device watcher stays inside the node.** It creates devices only in that router's own network namespace, from interface names it validates, never through a shell and never on the management interface `eth0`.
+- **Fixed images.** A node runs the FRR image, a cEOS image, the built-in Linux host, or an image on a list that root owns on the VM. Nodes are privileged, so an image is as trusted as root there. The helper cannot write that list and never pulls an image; only a person adds one, with `sudo clab-mcp-admin`.
 - **Resource caps.** At most 16 nodes per lab, 6 cEOS per lab, 8 cEOS running on the VM, and 6 lab definitions.
 
 Tool annotations mark read-only tools (`readOnlyHint`) and destructive ones (`destroy_topology`, `reset_exercise`). You can auto-approve the read-only tools and keep prompts for the rest.
@@ -65,7 +67,7 @@ Tool annotations mark read-only tools (`readOnlyHint`) and destructive ones (`de
 |---|---|---|
 | Setup | `check_setup` | Is the VM ready, which images are present, and the command to run for anything missing |
 | 1 Lab | `list_labs` | Lab definitions and running container counts |
-| | `create_topology` | Template (`line`, `ring`, `full-mesh`, `star`, `leaf-spine`) or explicit nodes/links; routing `ospf`, `ebgp`, `ibgp-ospf`, `none` (addresses only) or `bare` (cabling only); FRR, cEOS or mixed (`node_kinds`) |
+| | `create_topology` | Template (`line`, `ring`, `full-mesh`, `star`, `leaf-spine`) or explicit nodes/links; routing `ospf`, `ebgp`, `ibgp-ospf`, `none` (addresses only) or `bare` (cabling only); node kinds `frr`, `ceos` and `host`, mixed freely |
 | | `deploy_topology` | Deploy and wait until every router has loaded its config; returns the access details below |
 | | `destroy_topology` | Remove containers; optionally delete the definition (confirm first) |
 | | `get_topology` | Design view: addressing, links, BGP sessions, node state |
@@ -91,6 +93,7 @@ MCP prompts appear as slash commands in Claude Code. Claude Code adds the `mcp__
 | Command | Argument | What it does |
 |---|---|---|
 | `/mcp__lab-dojo__init` | none | First-time check of the VM and its images; gives the command for anything missing. |
+| `/mcp__lab-dojo__add_image` | the image you want, in your own words | Tells you how to make an image available: the command to run on the VM, or why it cannot be done. Claude never adds an image itself. |
 | `/mcp__lab-dojo__build_lab` | what you want, in your own words | Builds and deploys a lab. Claude first asks about anything the description leaves open, shows the plan, and waits for your go-ahead. |
 | `/mcp__lab-dojo__exercise` | a lab name or a lab description, and optionally `easy`, `medium` or `hard` | Runs a troubleshooting exercise with Claude as tutor, on an existing lab or one built the same way as `build_lab`. |
 | `/mcp__lab-dojo__troubleshoot_lab` | lab name | Claude diagnoses the lab bottom-up and explains what it finds. |
@@ -115,6 +118,33 @@ Every deploy (`deploy_topology`, or `create_topology` with `deploy: true`) retur
 - each link interface and the neighbour interface it connects to, e.g. `eth2 -> r3 Ethernet1`.
 
 Run the commands on the VM, after `ssh <user>@<vm>`. `list_nodes` returns the same details at any time.
+
+### Hosts and extra images
+
+A `host` node is a Linux machine: Alpine with `bash`, `ip`, `ping`, `traceroute`, `mtr`, `tcpdump`, `dig`, `curl` and `iperf3`. It is not a router:
+
+- It gets no generated addresses and no startup configuration. You configure it by hand, e.g. `docker exec -it clab-<lab>-host1 bash`, then `ip addr add ...`. What you set is gone after a redeploy.
+- On a link between a router and a host, the router's end keeps its generated address, so the gateway is ready.
+- Router tools (`exec_cli`, `configure_device`, `get_routes` and so on) refuse a host. `ping` and `traceroute` from a host work.
+- Health checks expect nothing of a host: no adjacency, no ping. A link to a host is judged from the router's end. Faults never land on a host or on a link towards one.
+
+A host node can run another image instead, by name. Register a public image on the VM first:
+
+```bash
+sudo /usr/local/libexec/clab-mcp-admin add-image web nginx:alpine   # pulls it and registers it as "web"
+/usr/local/libexec/clab-mcp-admin list-images
+sudo /usr/local/libexec/clab-mcp-admin remove-image web
+```
+
+Then a node `{ "name": "web1", "kind": "host", "image": "web" }` runs it. `check_setup` lists the registered images. The image must keep running by itself, and it needs `ping` and `traceroute` for those two tools to work from it.
+
+When a lab needs an image the VM does not have, Claude does not add it. It tells you which case applies:
+
+| What is missing | What happens |
+|---|---|
+| A public Linux image | Claude gives you the `add-image` command to run, then continues. |
+| An image behind a sign-in (Arista cEOS, Cisco and the like) | No command can pull it. Claude gives the manual steps where it knows them. |
+| A router system other than FRR and cEOS | Not supported: every router tool needs code for that system. |
 
 ### FRR lab image
 
@@ -176,12 +206,13 @@ You, the human, are the learner. Claude reads the `tutor_only` sections and shou
 
 ## What the install script does
 
-It uses `sudo` for two things only:
+It uses `sudo` for three things only:
 
-- installing the helper under `/usr/local/libexec`;
-- creating `/var/lib/containerlab-mcp/labs`, owned by your user. Lab definitions, generated configs and lab metadata live there.
+- installing the helper and the admin script under `/usr/local/libexec`;
+- creating `/var/lib/containerlab-mcp/labs`, owned by your user. Lab definitions, generated configs and lab metadata live there;
+- creating `/etc/containerlab-mcp/images`, owned by root: the list of extra images. An existing list is kept.
 
-Before that it builds the FRR lab image from `remote/frr/`, pulling the stock FRR image if it is missing. The tag and FRR release both come from `FRR_IMAGE` in `clab-mcp-remote`, so that is the one place to change the version.
+Before that it builds the FRR lab image from `remote/frr/` and the Linux host image from `remote/host/`, pulling the public base images if they are missing. The tag and FRR release both come from `FRR_IMAGE` in `clab-mcp-remote`, so that is the one place to change the version.
 
 It does not change SSH, Docker or Containerlab configuration. Rerun it after changing anything under `remote/`, and after pulling a new version of lab-dojo: the helper carries a version number, and `check_setup` reports a helper that is older than the server.
 

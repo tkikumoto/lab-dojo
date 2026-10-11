@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Registers extra images that lab-dojo host nodes may run.
+#
+# Run by a person on the VM, with sudo. The MCP server never calls this script
+# and the helper it does call cannot write the list: lab nodes run privileged,
+# so adding an image is a decision about what gets root on this VM.
+#
+#   sudo clab-mcp-admin add-image <name> <image-ref>    pull it and register it
+#   sudo clab-mcp-admin remove-image <name>             unregister it (the image stays in Docker)
+#   clab-mcp-admin list-images
+set -euo pipefail
+umask 022
+
+IMAGES_FILE=/etc/containerlab-mcp/images
+
+die() {
+  printf 'clab-mcp-admin: %s\n' "$*" >&2
+  exit 2
+}
+
+valid_image_name() { [[ ${1:-} =~ ^[a-z][a-z0-9-]{0,19}$ ]]; }
+valid_image_ref() { [[ ${1:-} =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,199}$ ]]; }
+
+# Rewrites the list without <name>, then adds "<name> <ref>" when a ref is given.
+write_list() {
+  local name=$1 ref=${2:-} tmp
+  tmp=$(mktemp "$IMAGES_FILE.XXXXXX")
+  awk -v name="$name" '$1 != name' "$IMAGES_FILE" > "$tmp"
+  [[ -z $ref ]] || printf '%s %s\n' "$name" "$ref" >> "$tmp"
+  chmod 0644 "$tmp"
+  mv "$tmp" "$IMAGES_FILE"
+}
+
+action=${1:-}
+[[ $action == list-images ]] || ((EUID == 0)) || die 'run this with sudo'
+[[ -f $IMAGES_FILE ]] || die "$IMAGES_FILE is missing; run install-remote.sh"
+
+case $action in
+  add-image)
+    (($# == 3)) || die 'usage: add-image <name> <image-ref>'
+    valid_image_name "$2" || die 'name: lowercase letters, digits and -, starting with a letter, at most 20'
+    valid_image_ref "$3" || die 'image-ref: a plain registry reference such as nginx:alpine'
+    docker pull "$3"
+    write_list "$2" "$3"
+    printf 'registered %s -> %s\n' "$2" "$3"
+    ;;
+  remove-image)
+    (($# == 2)) || die 'usage: remove-image <name>'
+    valid_image_name "$2" || die 'invalid name'
+    write_list "$2"
+    printf 'unregistered %s\n' "$2"
+    ;;
+  list-images)
+    (($# == 1)) || die 'usage: list-images'
+    cat "$IMAGES_FILE"
+    ;;
+  *) die 'usage: add-image <name> <image-ref> | remove-image <name> | list-images' ;;
+esac

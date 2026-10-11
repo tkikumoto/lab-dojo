@@ -3,7 +3,7 @@
 import { remote, RemoteRefusal, sshTarget } from "./remote.mjs";
 
 /** Must equal HELPER_VERSION in remote/clab-mcp-remote. */
-export const HELPER_VERSION = 2;
+export const HELPER_VERSION = 3;
 
 const installSteps = (target) => [
   "Run from the lab-dojo folder:",
@@ -13,6 +13,10 @@ const installSteps = (target) => [
 
 const CEOS_STEPS = "Arista images need a sign-in, so no command can pull one. Download cEOS-lab from arista.com, "
   + "copy the file to the VM and run there: docker import cEOS64-lab-<version>.tar.xz ceos:<version>";
+
+// For the user to run on the VM; the server never runs it. It pulls a public
+// image and registers it under a short name that a host node can then use.
+const ADD_IMAGE_COMMAND = "sudo /usr/local/libexec/clab-mcp-admin add-image <name> <image-ref>";
 
 /** The helper's "key=value" lines as an object. */
 export function parseFacts(text) {
@@ -66,6 +70,7 @@ export function setupReport(target, facts, failure) {
     "Install Containerlab on the VM (https://containerlab.dev/install/) and make sure this account can run `clab`.");
   add("Lab storage", facts.lab_storage === "ok", facts.lab_storage === "ok" ? "writable" : "missing", installSteps(target));
   add("FRR router image", Boolean(facts.frr_image), facts.frr_image || "not built", installSteps(target));
+  add("Linux host image", Boolean(facts.host_image), facts.host_image || "not built", installSteps(target));
   checks.push({
     check: "Arista cEOS image (optional)",
     ok: Boolean(facts.ceos_image),
@@ -79,9 +84,16 @@ export function setupReport(target, facts, failure) {
     memory_available_mb: Number(facts.memory_available_mb),
     labs_defined: `${facts.labs_defined} of ${facts.labs_max}`,
     can_build: ready
-      ? ["routed labs and exercises with FRR routers", ...(facts.ceos_image ? ["Arista cEOS nodes, and layer 2 labs (routing `bare`)"] : [])]
+      ? [
+        "routed labs and exercises with FRR routers",
+        "Linux host nodes (Alpine with network tools)",
+        ...(facts.ceos_image ? ["Arista cEOS nodes, and layer 2 labs (routing `bare`)"] : []),
+      ]
       : [],
     not_available: facts.ceos_image ? [] : ["Arista cEOS nodes and layer 2 labs: the VM has no ceos image"],
+    // Images a person registered for host nodes, as "name=image". "(missing)" marks one that is registered but not on the VM.
+    extra_images: (facts.extra_images ?? "").split(",").filter(Boolean),
+    add_image_command: ADD_IMAGE_COMMAND,
   });
 }
 

@@ -2,7 +2,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { buildTopology, describeTopology, linkInterfaces, renderStartupConfig } from "../server/src/topology.mjs";
+import {
+  buildTopology, cliCommand, describeTopology, helperSpec, linkInterfaces, renderStartupConfig,
+} from "../server/src/topology.mjs";
+import { designChecks } from "../server/src/health.mjs";
 import { planFault, rng } from "../server/src/faults.mjs";
 import { parsePing } from "../server/src/drivers.mjs";
 import { taskFor } from "../server/src/exercises.mjs";
@@ -103,7 +106,8 @@ test("an addressed lab still renders addresses and routed cEOS ports", () => {
 test("check_setup stops at the first blocking problem and names the fix", () => {
   const facts = parseFacts([
     `helper_version=${HELPER_VERSION}`, "docker=28.5.2", "containerlab=0.80.0", "lab_storage=ok", "labs_defined=2", "labs_max=6",
-    "memory_available_mb=10641", "frr_image=lab-dojo/frr:10.7.1", "ceos_image=",
+    "memory_available_mb=10641", "frr_image=lab-dojo/frr:10.7.1", "ceos_image=", "host_image=lab-dojo/host:1",
+    "extra_images=web=nginx:alpine,dns=coredns/coredns:1.12(missing),",
   ].join("\n"));
   const failed = (r) => r.checks.filter((c) => !c.ok && !c.optional).map((c) => c.check);
 
@@ -123,13 +127,87 @@ test("check_setup stops at the first blocking problem and names the fix", () => 
   assert.equal(ok.ready, true);
   assert.deepEqual(failed(ok), []);
   assert.match(ok.checks.at(-1).fix, /docker import/);
-  assert.deepEqual(ok.can_build, ["routed labs and exercises with FRR routers"]);
+  assert.deepEqual(ok.can_build, ["routed labs and exercises with FRR routers", "Linux host nodes (Alpine with network tools)"]);
   assert.equal(ok.not_available.length, 1);
-  assert.equal(setupReport("me@vm", { ...facts, ceos_image: "ceos:4.36.2F" }).can_build.length, 2);
-  assert.deepEqual(failed(setupReport("me@vm", { ...facts, frr_image: "", containerlab: "" })), ["Containerlab", "FRR router image"]);
+  assert.equal(setupReport("me@vm", { ...facts, ceos_image: "ceos:4.36.2F" }).can_build.length, 3);
+  assert.deepEqual(failed(setupReport("me@vm", { ...facts, frr_image: "", containerlab: "", host_image: "" })),
+    ["Containerlab", "FRR router image", "Linux host image"]);
+  // Extra images come from the root-owned list on the VM; the command to add one is for the user to run.
+  assert.deepEqual(ok.extra_images, ["web=nginx:alpine", "dns=coredns/coredns:1.12(missing)"]);
+  assert.match(ok.add_image_command, /^sudo .*clab-mcp-admin add-image <name> <image-ref>$/);
 });
 
 test("the helper and the server agree on the helper version", () => {
   const helper = readFileSync(new URL("../remote/clab-mcp-remote", import.meta.url), "utf8");
   assert.equal(Number(/^HELPER_VERSION=(\d+)$/m.exec(helper)[1]), HELPER_VERSION);
+});
+
+test("a host is a Linux machine, not a router", () => {
+  const t = buildTopology({
+    name: "edge",
+    routing: "ibgp-ospf",
+    nodes: [{ name: "r1" }, { name: "r2" }, { name: "host1", kind: "host" }, { name: "web1", kind: "host", image: "web" }],
+    links: [{ a: "r1", b: "r2" }, { a: "r1", b: "host1" }, { a: "r2", b: "web1" }],
+  });
+  const [r1, , host1, web1] = t.nodes;
+
+  // No generated addresses, routing or startup configuration; the router's end of the link keeps its address.
+  assert.equal(host1.loopback, undefined);
+  assert.equal(host1.asn, undefined);
+  assert.equal(renderStartupConfig(t, host1), null);
+  assert.deepEqual(t.links[1], {
+    id: 1,
+    subnet: "10.1.3.0/30",
+    a: { node: "r1", interface: "eth2", ip: "10.1.3.1" },
+    b: { node: "host1", interface: "eth1", ip: undefined },
+  });
+  assert.match(renderStartupConfig(t, r1), /interface eth2\n description to host1 eth1\n ip address 10\.1\.3\.1\/30/);
+  assert.equal(describeTopology(t).links[1], "r1 eth2 10.1.3.1  <->  host1 eth1   (10.1.3.0/30)");
+  assert.deepEqual(t.bgp_sessions.map((s) => `${s.a}-${s.b}`), ["r1-r2"]);
+
+  // What reaches the VM helper, and how a person opens each node.
+  assert.match(helperSpec(t), /^node host1 host$/m);
+  assert.match(helperSpec(t), /^node web1 host web$/m);
+  assert.match(cliCommand(t, host1), / bash$/);
+  assert.match(cliCommand(t, web1), / sh$/);
+
+  // Faults never land on a host or on a link towards one.
+  assert.throws(() => planFault(t, "interface_shutdown", { node: "r1", interface: "eth2" }, rng(1)), /no suitable link interface/);
+  assert.throws(() => planFault(t, "static_blackhole", { node: "r1", peer: "host1" }, rng(1)), /two routers/);
+  for (let seed = 1; seed <= 20; seed += 1) {
+    const { params } = planFault(t, "ospf_passive_interface", undefined, rng(seed));
+    assert.ok(["r1", "r2"].includes(params.node) && ["r1", "r2"].includes(params.peer));
+    assert.ok(["r1", "r2"].includes(planFault(t, "static_blackhole", undefined, rng(seed)).params.target));
+  }
+
+  assert.throws(() => buildTopology({ name: "x", nodes: [{ name: "r1", image: "web" }] }), /only a host node takes an image/);
+  assert.throws(() => buildTopology({ name: "x", nodes: [{ name: "h1", kind: "host" }], extra_config: { h1: ["x"] } }), /no startup configuration/);
+});
+
+test("health checks skip what a host cannot have", () => {
+  const t = buildTopology({
+    name: "edge",
+    routing: "ibgp-ospf",
+    nodes: [{ name: "r1" }, { name: "r2" }, { name: "host1", kind: "host" }],
+    links: [{ a: "r1", b: "r2" }, { a: "r1", b: "host1" }],
+  });
+  const up = (name) => ({ name, admin: "up", oper: "up", addresses: [] });
+  const router = (self, peer, links) => ({
+    interfaces: links.map(up),
+    ospf: [{ neighbor_id: `10.255.0.${peer}`, eth: "eth1", state: "full" }],
+    bgp: { peers: [{ peer: `10.255.0.${peer}`, state: "established" }] },
+    routes: [{ prefix: `172.16.${peer}.0/24`, protocol: "bgp", nexthops: [] }],
+  });
+  const snap = { r1: router(1, 2, ["eth1", "eth2"]), r2: router(2, 1, ["eth1"]), host1: {} };
+  const reach = { "r1>10.255.0.2": true, "r2>10.255.0.1": true };
+
+  const checks = designChecks(t, snap, reach);
+  assert.deepEqual(checks.filter((c) => !c.ok), []);
+  // 2 links, 1 adjacency, 1 session, 2 BGP routes, 2 pings: nothing is expected of the host.
+  assert.equal(checks.length, 8);
+  assert.ok(checks.every((c) => !/host1/.test(c.id)));
+
+  // The link to the host is still watched, from the router's end.
+  snap.r1.interfaces[1].oper = "down";
+  assert.deepEqual(designChecks(t, snap, reach).filter((c) => !c.ok).map((c) => c.description), ["Link r1 eth2 <-> host1 eth1 is down"]);
 });

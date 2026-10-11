@@ -3,7 +3,7 @@
 // passes, not just the one the exercise author had in mind.
 import { remote } from "./remote.mjs";
 import { getBgpSummary, getInterfaces, getOspfNeighbors, getRoutes, parsePing } from "./drivers.mjs";
-import { isBare, loopbackLabel, nodeByName, osIfName, toEth, usesBgp, usesOspf } from "./topology.mjs";
+import { isBare, isRouter, loopbackLabel, nodeByName, osIfName, routerLinks, toEth, usesBgp, usesOspf } from "./topology.mjs";
 
 async function settle(promise) {
   try {
@@ -14,6 +14,7 @@ async function settle(promise) {
 }
 
 export async function collectNode(lab, topology, node) {
+  if (!isRouter(node)) return {}; // a host has no router CLI to ask
   const [interfaces, routes, ospf, bgp] = await Promise.all([
     settle(getInterfaces(lab, node)),
     settle(getRoutes(lab, node)),
@@ -31,8 +32,9 @@ export async function collectSnapshot(lab, topology) {
 /** Loopback-to-loopback reachability, one ping sweep per source node. */
 export async function collectReachability(lab, topology) {
   const results = {};
-  await Promise.all(topology.nodes.map(async (src) => {
-    const targets = topology.nodes.filter((n) => n !== src).map((n) => n.loopback);
+  const routers = topology.nodes.filter(isRouter);
+  await Promise.all(routers.map(async (src) => {
+    const targets = routers.filter((n) => n !== src).map((n) => n.loopback);
     if (!targets.length) return;
     try {
       const out = await remote("ping-sweep", [lab, src.name, src.loopback, ...targets], { timeout: 60_000 });
@@ -63,7 +65,8 @@ function evaluateLinks(topology, snapshot) {
       const intf = Array.isArray(list) ? list.find((i) => toEth(i.name) === end.interface) : undefined;
       return { node, end, intf, label: `${end.node} ${osIfName(node.kind, end.interface)}` };
     });
-    const bad = ends.filter((e) => !e.intf || e.intf.oper !== "up" || e.intf.admin !== "up");
+    // A host's interface state cannot be read, so its end is judged by the other end.
+    const bad = ends.filter((e) => isRouter(e.node) && (!e.intf || e.intf.oper !== "up" || e.intf.admin !== "up"));
     return check(
       `link:${link.a.node}:${link.a.interface}`,
       `Link ${ends[0].label} <-> ${ends[1].label} is down`,
@@ -74,7 +77,7 @@ function evaluateLinks(topology, snapshot) {
 }
 
 function evaluateOspf(topology, snapshot) {
-  return topology.links.map((link) => {
+  return routerLinks(topology).map((link) => {
     const sides = [[link.a, link.b], [link.b, link.a]].map(([self, other]) => {
       const list = snapshot[self.node]?.ospf;
       const peer = nodeByName(topology, other.node);
@@ -105,9 +108,10 @@ function evaluateBgpSessions(topology, snapshot) {
 
 function evaluateBgpRoutes(topology, snapshot) {
   const checks = [];
-  for (const node of topology.nodes) {
+  const routers = topology.nodes.filter(isRouter);
+  for (const node of routers) {
     const routes = snapshot[node.name]?.routes;
-    for (const other of topology.nodes) {
+    for (const other of routers) {
       if (other === node) continue;
       const route = Array.isArray(routes) ? routes.find((r) => r.prefix === other.service_prefix) : undefined;
       checks.push(check(
@@ -123,8 +127,9 @@ function evaluateBgpRoutes(topology, snapshot) {
 
 function evaluateReachability(topology, reach) {
   const checks = [];
-  for (const src of topology.nodes) {
-    for (const dst of topology.nodes) {
+  const routers = topology.nodes.filter(isRouter);
+  for (const src of routers) {
+    for (const dst of routers) {
       if (src === dst) continue;
       checks.push(check(
         `reach:${src.name}:${dst.name}`,
@@ -172,6 +177,17 @@ export async function runExtraCheck(lab, topology, spec) {
   throw new Error(`unknown check type ${spec.type}`);
 }
 
+/** Every check the design implies, from collected state. Pure, so it can be tested without a VM. */
+export function designChecks(topology, snap, reach) {
+  return [
+    ...evaluateLinks(topology, snap),
+    ...(usesOspf(topology) ? evaluateOspf(topology, snap) : []),
+    ...evaluateBgpSessions(topology, snap),
+    ...(usesBgp(topology) ? evaluateBgpRoutes(topology, snap) : []),
+    ...(reach ? evaluateReachability(topology, reach) : []),
+  ];
+}
+
 export async function evaluateHealth(lab, topology, { extraChecks = [], snapshot } = {}) {
   const [snap, reach, extra] = await Promise.all([
     snapshot ?? collectSnapshot(lab, topology),
@@ -180,14 +196,7 @@ export async function evaluateHealth(lab, topology, { extraChecks = [], snapshot
     Promise.all(extraChecks.map((spec) => runExtraCheck(lab, topology, spec)
       .catch((error) => check(`extra:${spec.type}`, `${spec.type} check could not run`, false, error.message)))),
   ]);
-  const checks = [
-    ...evaluateLinks(topology, snap),
-    ...(usesOspf(topology) ? evaluateOspf(topology, snap) : []),
-    ...evaluateBgpSessions(topology, snap),
-    ...(usesBgp(topology) ? evaluateBgpRoutes(topology, snap) : []),
-    ...(reach ? evaluateReachability(topology, reach) : []),
-    ...extra,
-  ];
+  const checks = [...designChecks(topology, snap, reach), ...extra];
   const failed = checks.filter((c) => !c.ok);
   return {
     snapshot: snap,
