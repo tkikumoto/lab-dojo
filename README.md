@@ -1,8 +1,49 @@
 # Lab Dojo
 
-An MCP server that lets Claude build, inspect and break network labs on a Containerlab VM, and run guided troubleshooting exercises with Claude as the tutor. Routers are FRR (`lab-dojo/frr:10.7.1`, the stock `quay.io/frrouting/frr:10.7.1` plus the [lab additions](#frr-lab-image) below) and Arista cEOS (`ceos:4.36.2F`), and a single lab can mix both.
+An MCP server that lets Claude build, inspect and break network labs on a Containerlab VM, and run guided troubleshooting exercises with Claude as the tutor. Routers are FRR (`lab-dojo/frr:10.7.1`, the stock `quay.io/frrouting/frr:10.7.1` plus the [lab additions](#frr-lab-image) below) and, optionally, Arista cEOS. A single lab can mix both.
 
-Claude Code launches the local Node server (`server/src/index.mjs`). The server reaches the Debian VM over SSH (`containerlab-server@orb`, OrbStack) and calls one allowlisted helper there: `/usr/local/libexec/clab-mcp-remote`.
+Your MCP client (for example Claude Code) launches the local Node server (`server/src/index.mjs`). The server reaches a Linux VM over SSH and calls one allowlisted helper there: `/usr/local/libexec/clab-mcp-remote`.
+
+## Requirements
+
+On your own machine:
+
+- Node.js 20 or newer, and an MCP client such as Claude Code.
+- SSH access to the VM with a key, so `ssh <user>@<vm> true` works without a password prompt.
+
+On the VM (any Linux machine or virtual machine you control):
+
+- Docker, usable by your account without `sudo`.
+- [Containerlab](https://containerlab.dev/install/), usable by your account as `clab`.
+- `sudo` once, for the install script.
+
+Router images:
+
+| Image | Needed | How it gets there |
+|---|---|---|
+| FRR lab image | Yes | The install script builds it from the public FRR image. |
+| Arista cEOS | No | Arista images need a sign-in, so you import one yourself: download cEOS-lab from arista.com, copy it to the VM and run `docker import cEOS64-lab-<version>.tar.xz ceos:<version>`. Any version works; the newest one present is used. |
+
+Without cEOS you can build every FRR lab and run every exercise. Arista nodes and layer 2 labs need it.
+
+## Setup
+
+1. **Install the helper on the VM.** From this folder:
+
+   ```bash
+   scp -r remote/. <user>@<vm>:/tmp/containerlab-mcp-remote
+   ssh <user>@<vm> 'cd /tmp/containerlab-mcp-remote && bash ./install-remote.sh'
+   ```
+
+2. **Register the server with your MCP client.** For Claude Code:
+
+   ```bash
+   claude mcp add lab-dojo --env CONTAINERLAB_SSH_TARGET=<user>@<vm> -- node /absolute/path/to/lab-dojo/server/src/index.mjs
+   ```
+
+   Or copy `.mcp.example.json` to `.mcp.json` in this folder and fill in the two values. `.mcp.json` is not tracked, so your own path and VM name stay local.
+
+3. **Run the first-time check.** In Claude Code: `/mcp__lab-dojo__init`. It checks SSH, the helper and its version, Docker, Containerlab, lab storage and the images, and gives you the exact command for anything that is missing. It installs nothing itself. Run it again after an upgrade: it tells you when the helper on the VM is older than the server.
 
 ## Security model
 
@@ -22,6 +63,7 @@ Tool annotations mark read-only tools (`readOnlyHint`) and destructive ones (`de
 
 | Layer | Tool | Purpose |
 |---|---|---|
+| Setup | `check_setup` | Is the VM ready, which images are present, and the command to run for anything missing |
 | 1 Lab | `list_labs` | Lab definitions and running container counts |
 | | `create_topology` | Template (`line`, `ring`, `full-mesh`, `star`, `leaf-spine`) or explicit nodes/links; routing `ospf`, `ebgp`, `ibgp-ospf`, `none` (addresses only) or `bare` (cabling only); FRR, cEOS or mixed (`node_kinds`) |
 | | `deploy_topology` | Deploy and wait until every router has loaded its config; returns the access details below |
@@ -48,6 +90,7 @@ MCP prompts appear as slash commands in Claude Code. Claude Code adds the `mcp__
 
 | Command | Argument | What it does |
 |---|---|---|
+| `/mcp__lab-dojo__init` | none | First-time check of the VM and its images; gives the command for anything missing. |
 | `/mcp__lab-dojo__build_lab` | what you want, in your own words | Builds and deploys a lab. Claude first asks about anything the description leaves open, shows the plan, and waits for your go-ahead. |
 | `/mcp__lab-dojo__exercise` | a lab name or a lab description, and optionally `easy`, `medium` or `hard` | Runs a troubleshooting exercise with Claude as tutor, on an existing lab or one built the same way as `build_lab`. |
 | `/mcp__lab-dojo__troubleshoot_lab` | lab name | Claude diagnoses the lab bottom-up and explains what it finds. |
@@ -71,7 +114,7 @@ Every deploy (`deploy_topology`, or `create_topology` with `deploy: true`) retur
 - the command that opens its CLI on the VM, e.g. `docker exec -it clab-ring4-r1 vtysh` for FRR or `docker exec -it clab-ring4-r3 Cli` for cEOS;
 - each link interface and the neighbour interface it connects to, e.g. `eth2 -> r3 Ethernet1`.
 
-Run the commands after `ssh containerlab-server@orb`. `list_nodes` returns the same details at any time.
+Run the commands on the VM, after `ssh <user>@<vm>`. `list_nodes` returns the same details at any time.
 
 ### FRR lab image
 
@@ -92,7 +135,7 @@ Limits:
 - A link-local IPv6 VRRP address (`vrrp 1 ipv6 fe80::1`) is not installed, because a second link-local on the macvlan breaks FRR's advertisement checksums. Use a global address as the gateway.
 - VRF devices are not created automatically.
 - Nothing is created on the management interface `eth0`, which sits on a bridge shared by every lab.
-- The OrbStack kernel on this VM has no MPLS and no GRE, so LDP, MPLS and GRE tunnels cannot work here. It also lacks IPv6 multicast routing.
+- What the kernel lacks, no container can use. For example the OrbStack kernel has no MPLS, no GRE and no IPv6 multicast routing, so LDP, MPLS and GRE tunnels cannot work on an OrbStack machine.
 
 ### Addressing plan
 
@@ -131,34 +174,31 @@ Difficulty controls how much the learner is told:
 
 You, the human, are the learner. Claude reads the `tutor_only` sections and should not reveal them. Physical and quality faults (`link_down`, Linux MTU, netem) can't be fixed from a router CLI. Once you diagnose one, Claude "replaces the cable" with `reset_exercise` and that fault's `fault_id`.
 
-## One-time VM installation
+## What the install script does
 
-From the project folder on the Mac:
-
-```bash
-scp -r remote/. containerlab-server@orb:/tmp/containerlab-mcp-remote
-ssh containerlab-server@orb 'cd /tmp/containerlab-mcp-remote && bash ./install-remote.sh'
-```
-
-The install script uses `sudo` for two things only:
+It uses `sudo` for two things only:
 
 - installing the helper under `/usr/local/libexec`;
 - creating `/var/lib/containerlab-mcp/labs`, owned by your user. Lab definitions, generated configs and lab metadata live there.
 
-Before that it builds the FRR lab image from `remote/frr/`, pulling the stock FRR image if it is missing. The tag and FRR release both come from `FRR_IMAGE` in `clab-mcp-remote`, so that is the one place to change the version. Rerun the install after changing anything under `remote/`.
+Before that it builds the FRR lab image from `remote/frr/`, pulling the stock FRR image if it is missing. The tag and FRR release both come from `FRR_IMAGE` in `clab-mcp-remote`, so that is the one place to change the version.
 
-It does not change SSH, Docker or Containerlab configuration. The VM account must already be able to run `docker` and `clab`, and `docker images` must list `ceos:4.36.2F`. Lab definitions created before the image existed keep the stock FRR image until they are recreated.
+It does not change SSH, Docker or Containerlab configuration. Rerun it after changing anything under `remote/`, and after pulling a new version of lab-dojo: the helper carries a version number, and `check_setup` reports a helper that is older than the server.
 
-## Claude Code connection
+## Configuration
 
-`.mcp.json` registers the server as `lab-dojo`. Its target is `containerlab-server@orb`, not `containerlab@orb`: that name selects a different OrbStack environment without Containerlab. The Node entry path is absolute; update it if you move the project. SSH connections are multiplexed through `~/.ssh/cm-clab-mcp-*` (override with `CONTAINERLAB_SSH_CONTROL_PATH`).
+| Variable | Meaning |
+|---|---|
+| `CONTAINERLAB_SSH_TARGET` | `<user>@<vm>` of the lab VM. Required. |
+| `CONTAINERLAB_REMOTE_HELPER` | Path of the helper on the VM. Default `/usr/local/libexec/clab-mcp-remote`. |
+| `CONTAINERLAB_SSH_CONTROL_PATH` | Where SSH keeps its shared connection. Default `~/.ssh/cm-clab-mcp-*`. |
 
-After changing server code, reconnect the server from `/mcp` so Claude Code picks it up.
+After changing server code, reconnect the server in your client (in Claude Code: `/mcp`) so it loads the new code.
 
-Example prompts:
+Example requests in plain words:
 
 ```text
-Build a 4-router OSPF ring where r3 is Arista cEOS, and deploy it.
+Build a 4-router OSPF ring and deploy it.
 Show me the health of lab ring4.
 Give me a medium OSPF troubleshooting exercise on ring4.
 I think r2's hello timer is wrong — check it.
@@ -173,7 +213,7 @@ npm run check   # node --check on every module + bash -n on the remote scripts
 npm test        # topology, fault targeting and ping parsing, then the helper's config-line filter
 ```
 
-The filter test (`tests/check-line.sh`) needs bash 4 or newer. On macOS it runs itself on the VM over SSH, reading the helper from this folder, so it tests your working copy and not the installed helper.
+The filter test (`tests/check-line.sh`) needs bash 4 or newer. macOS ships bash 3.2, so there it reruns itself on the VM over SSH: set `CONTAINERLAB_SSH_TARGET` in your shell first. The VM must see this folder at the same path (OrbStack machines do); otherwise run the test on Linux. It reads the helper from this folder, so it tests your working copy and not the installed helper.
 
 `npm start` waits for MCP JSON-RPC on stdin; this is expected.
 
@@ -184,3 +224,7 @@ The filter test (`tests/check-line.sh`) needs bash 4 or newer. On macOS it runs 
 3. `create_exercise` with `lab: "mix"` and `difficulty: "easy"`, then fix the fault, then `validate_exercise`.
 4. `reset_exercise` with `lab: "mix"`.
 5. After explicit confirmation, `destroy_topology` with `lab: "mix"` and `delete_definition: true`.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
