@@ -34,7 +34,8 @@ function bgpEnds(topology) {
 function resolveLinkEnd(topology, params, filter = () => true) {
   const ends = linkEnds(topology).filter(filter);
   const eth = params.interface ? toEth(params.interface) : undefined;
-  const match = ends.find((e) => e.node === params.node && (!eth || e.interface === eth));
+  // A name toEth cannot read must fail, not fall back to "any interface".
+  const match = (!params.interface || eth) && ends.find((e) => e.node === params.node && (!eth || e.interface === eth));
   if (!match) {
     throw new Error(`no suitable link interface on ${params.node}${params.interface ? ` ${params.interface}` : ""}. `
       + `Valid: ${ends.map((e) => `${e.node} ${osIf(topology, e.node, e.interface)}`).join(", ") || "none"}`);
