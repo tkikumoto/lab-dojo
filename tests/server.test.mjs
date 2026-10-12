@@ -81,7 +81,7 @@ test("a bare lab is cabling only: no addresses, cEOS ports stay switchports", ()
     "!",
   ].join("\n"));
   assert.equal(renderStartupConfig(t, t.nodes[2]), [
-    "hostname r3", "!",
+    "hostname r3", "username admin privilege 15 secret admin", "!",
     "interface Ethernet1", "   description to r2 eth2", "!",
     "interface Ethernet2", "   description to r1 eth2", "!",
     "!",

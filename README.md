@@ -111,7 +111,7 @@ Nothing is assumed to be running: every flow starts by listing the labs on the V
 Every deploy (`deploy_topology`, or `create_topology` with `deploy: true`) returns an `access` section, and Claude is instructed to show it to you as a table. For each node it gives:
 
 - the management IP;
-- the command that opens its CLI on the VM, e.g. `docker exec -it clab-ring4-r1 vtysh` for FRR or `docker exec -it clab-ring4-r3 Cli` for cEOS;
+- the command that opens its CLI on the VM, e.g. `docker exec -it clab-ring4-r1 vtysh` for FRR or `docker exec -it clab-ring4-r3 Cli` for cEOS (a cEOS node also takes SSH on its management IP, with Containerlab's default login `admin` / `admin`);
 - each link interface and the neighbour interface it connects to, e.g. `eth2 -> r3 Ethernet1`.
 
 Run the commands on the VM, after `ssh <user>@<vm>`. `list_nodes` returns the same details at any time.
