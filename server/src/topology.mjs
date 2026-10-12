@@ -289,7 +289,8 @@ function renderFrr(topology, node) {
 
 function renderCeos(topology, node) {
   // Bare: no routing, and link ports stay default switchports (layer 2, STP runs).
-  const out = isBare(topology) ? [`hostname ${node.name}`, "!"] : [`hostname ${node.name}`, "ip routing", "!"];
+  // A startup file replaces Containerlab's cEOS default whole, so its admin/admin login is repeated here.
+  const out = [`hostname ${node.name}`, "username admin privilege 15 secret admin", ...(isBare(topology) ? [] : ["ip routing"]), "!"];
   if (node.loopback) out.push("interface Loopback0", `   ip address ${node.loopback}/32`, "!");
   if (node.service_prefix) out.push("interface Loopback1", `   ip address ${node.service_prefix.replace(/0\/24$/, "1/24")}`, "!");
   for (const intf of node.interfaces) {
