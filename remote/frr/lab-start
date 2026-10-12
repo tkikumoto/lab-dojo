@@ -22,6 +22,12 @@ tune net.ipv4.conf.default.ignore_routes_with_linkdown=1
 tune net.ipv6.conf.all.ignore_routes_with_linkdown=1
 tune net.ipv6.conf.default.ignore_routes_with_linkdown=1
 
+# The management network's default route would outrank every default route a
+# lab router learns, and carry lab traffic out of the lab. The VM still reaches
+# the node: it sits on the management subnet itself.
+ip route del default dev eth0 2>/dev/null
+ip -6 route del default dev eth0 2>/dev/null
+
 (while true; do /usr/local/sbin/lab-netdev-sync; sleep 2; done) &
 
 exec /usr/lib/frr/docker-start

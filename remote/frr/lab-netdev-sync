@@ -42,6 +42,9 @@ IFNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,14}$")
 VLAN_RE = re.compile(r"^(.+)\.([0-9]{1,4})$")
 DUMMY_RE = re.compile(r"^(lo|loopback|dummy)[0-9]{1,4}$", re.IGNORECASE)
 VRRP_RE = re.compile(r"^vrrp ([0-9]{1,3}) (ip|ipv6) (\S+)$")
+# A virtual address brings no subnet route with it. With one, a Master sends
+# its own traffic from the virtual address, which the Backups hold too and ignore.
+NO_ROUTE = ("noprefixroute",)
 
 
 noted = set()
@@ -165,7 +168,7 @@ def ensure_vrrp(links, parent, vrid, version, addresses):
                 if not ipaddress.ip_address(address).is_link_local:
                     ip("addr", "del", f"{address}/{length}", "dev", name)
             for address, length in wanted - current:
-                if ip("addr", "add", f"{address}/{length}", "dev", name):
+                if ip("addr", "add", f"{address}/{length}", "dev", name, *NO_ROUTE):
                     log(f"added {address}/{length} to {name}")
             return name
 
@@ -186,7 +189,7 @@ def ensure_vrrp(links, parent, vrid, version, addresses):
         ip("link", "del", name)
         return None
     for address, length in sorted(wanted):
-        ip("addr", "add", f"{address}/{length}", "dev", name)
+        ip("addr", "add", f"{address}/{length}", "dev", name, *NO_ROUTE)
     shown = ", ".join(f"{a}/{n}" for a, n in sorted(wanted)) or "no virtual address installed"
     enable(name, f"VRRP {vrid} on {parent}, {shown}")
     return name
