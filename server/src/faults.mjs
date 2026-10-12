@@ -3,10 +3,12 @@
 // progressive hints, the solution, and any extra checks needed to prove it is
 // fixed when the generic health checks would not notice (e.g. packet loss).
 import { remote } from "./remote.mjs";
-import { isBare, loopbackLabel, nodeByName, osIfName, toEth, usesBgp, usesOspf } from "./topology.mjs";
+import { isBare, isRouter, loopbackLabel, nodeByName, osIfName, routerLinks, toEth, usesBgp, usesOspf } from "./topology.mjs";
 
+// Faults go on links between routers only: a host cannot be configured, and
+// nothing checks an adjacency or an address towards one.
 function linkEnds(topology) {
-  return topology.links.flatMap((link) => [[link.a, link.b], [link.b, link.a]].map(([self, other]) => ({
+  return routerLinks(topology).flatMap((link) => [[link.a, link.b], [link.b, link.a]].map(([self, other]) => ({
     node: self.node,
     interface: self.interface,
     peer: other.node,
@@ -225,12 +227,16 @@ export const FAULTS = {
     difficulty: 2,
     summary: "Add a static /32 to Null0 for another router's loopback.",
     applies: (t) => t.nodes.length > 1 && !isBare(t),
-    candidates: (t) => t.nodes.flatMap((n) => t.nodes.filter((o) => o !== n).map((o) => ({ node: n.name, target: o.name }))),
+    candidates: (t) => {
+      const routers = t.nodes.filter(isRouter);
+      return routers.flatMap((n) => routers.filter((o) => o !== n).map((o) => ({ node: n.name, target: o.name })));
+    },
     resolve: (t, p) => {
       nodeByName(t, p.node);
       const wanted = p.target ?? p.peer;
-      const target = wanted ? nodeByName(t, wanted) : t.nodes.find((n) => n.name !== p.node);
-      if (target.name === p.node) throw new Error("static_blackhole target must be a different node");
+      const target = wanted ? nodeByName(t, wanted) : t.nodes.find((n) => n.name !== p.node && isRouter(n));
+      if (target?.name === p.node) throw new Error("static_blackhole target must be a different node");
+      if (!target || !isRouter(target) || !isRouter(nodeByName(t, p.node))) throw new Error("static_blackhole needs two routers, not a host");
       return { node: p.node, target: target.name, prefix: `${target.loopback}/32` };
     },
     actions: (t, p) => [{ op: "configure", node: p.node, lines: [`ip route ${p.prefix} Null0`] }],
@@ -286,8 +292,12 @@ export const FAULTS = {
     difficulty: 2,
     summary: "Stop a router from advertising its service prefix in BGP.",
     applies: (t) => usesBgp(t),
-    candidates: (t) => t.nodes.map((n) => ({ node: n.name })),
-    resolve: (t, p) => ({ node: p.node, prefix: nodeByName(t, p.node).service_prefix }),
+    candidates: (t) => t.nodes.filter(isRouter).map((n) => ({ node: n.name })),
+    resolve: (t, p) => {
+      const prefix = nodeByName(t, p.node).service_prefix;
+      if (!prefix) throw new Error(`${p.node} is a host: it advertises no service prefix`);
+      return { node: p.node, prefix };
+    },
     actions: (t, p) => {
       const asn = nodeByName(t, p.node).asn;
       return [frrOrCeos(t, p.node,

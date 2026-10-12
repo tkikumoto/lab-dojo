@@ -7,6 +7,7 @@ import {
   describeFault, FAULTS, FAULT_TYPES, faultHints, faultTicket, nodesTouched, pick, planFault, rng, runActions,
 } from "./faults.mjs";
 import { saveState, sleep } from "./lab.mjs";
+import { isRouter } from "./topology.mjs";
 
 export const DIFFICULTIES = {
   easy: { count: 1, levels: [1], symptoms: "all" },
@@ -79,7 +80,8 @@ export async function revertFault(lab, topology, state, faultId) {
 }
 
 export async function restoreAll(lab, topology, state) {
-  await Promise.all(topology.nodes.map((n) => remote("restore-node", [lab, n.name], { timeout: 120_000 })));
+  // Hosts are left alone: they have no startup configuration, and their addresses are the user's.
+  await Promise.all(topology.nodes.filter(isRouter).map((n) => remote("restore-node", [lab, n.name], { timeout: 120_000 })));
   await kickBgpSessions(lab, topology.bgp_sessions);
   state.faults = [];
 }
@@ -312,7 +314,7 @@ export async function resetExercise(lab, topology, state, { mode = "baseline", f
   await saveState(lab, state);
   return {
     status: "baseline restored",
-    restored_nodes: topology.nodes.map((n) => n.name),
+    restored_nodes: topology.nodes.filter(isRouter).map((n) => n.name),
     note: "All nodes are back to their startup configuration with links up and no impairments. Routing needs a few seconds to reconverge.",
   };
 }
