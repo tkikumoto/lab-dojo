@@ -117,6 +117,7 @@ tool(
   "create_topology",
   [
     "Define a new lab from a template or an explicit node/link list. Addressing, OSPF/BGP configuration and Containerlab YAML are generated (raw YAML is not accepted, for safety).",
+    "Before calling this, ask the user about anything the request leaves open (node count, how nodes connect, node kinds, what is pre-configured, lab name), show the plan and wait for their go-ahead.",
     `Templates: ${TEMPLATES.join(", ")}. Routing: ospf (area 0), ebgp (AS 65000+i per node), ibgp-ospf (OSPF underlay + iBGP full mesh AS 65000), none (addresses only, so the learner configures routing), bare (cabling only: no IP addresses at all; a bare cEOS link port is a default switchport, so use bare with ceos nodes for layer 2 labs such as STP or VLANs).`,
     "Addressing (not in bare): loopback 10.255.0.<i>/32; link between nodes i<j = 10.<i>.<j>.0/30; BGP modes add service prefix 172.16.<i>.0/24.",
     "Kinds: frr (light, ~50 MB; OSPFv2/v3, BGP, IS-IS, RIP, BFD, VRRP and static routing daemons run) or ceos (Arista cEOS, ~1.5 GB RAM each, max 6 per lab; optional: only when check_setup lists a cEOS image) or host (a Linux machine, Alpine with network tools: no router CLI, no generated addresses or routing, the user configures it by hand; router tools refuse it, ping and traceroute from it work). A host node may name another registered `image` (check_setup lists them); images are registered only by a person on the lab host.",
@@ -520,7 +521,7 @@ tool(
 
 tool(
   "get_exercise_status",
-  "Current exercise of a lab: status, briefing, attempts, hints used, plus tutor_only fault details and solutions. Also lists manually injected faults.",
+  "Current exercise of a lab: status, briefing, attempts, hints used, plus tutor_only fault details and solutions (never reveal tutor_only to the learner unless they give up). Also lists manually injected faults.",
   { lab },
   READ_ONLY,
   async ({ lab: labName }) => {
