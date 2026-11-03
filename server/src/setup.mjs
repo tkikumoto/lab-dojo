@@ -1,4 +1,4 @@
-// First-run check of the VM, also useful after an upgrade. It only reads:
+// First-run check of the lab host, also useful after an upgrade. It only reads:
 // every fix is a command for the user to run, never something this server does.
 import { remote, RemoteRefusal, sshTarget } from "./remote.mjs";
 
@@ -12,9 +12,9 @@ const installSteps = (target) => [
 ].join("\n");
 
 const CEOS_STEPS = "Arista images need a sign-in, so no command can pull one. Download cEOS-lab from arista.com, "
-  + "copy the file to the VM and run there: docker import cEOS64-lab-<version>.tar.xz ceos:<version>";
+  + "copy the file to the lab host and run there: docker import cEOS64-lab-<version>.tar.xz ceos:<version>";
 
-// For the user to run on the VM; the server never runs it. It pulls a public
+// For the user to run on the lab host; the server never runs it. It pulls a public
 // image and registers it under a short name that a host node can then use.
 const ADD_IMAGE_COMMAND = "sudo /usr/local/libexec/clab-mcp-admin add-image <name> <image-ref>";
 
@@ -37,35 +37,35 @@ export function setupReport(target, facts, failure) {
   const report = (extra) => ({ ready: checks.every((c) => c.ok || c.optional), checks, ...extra });
 
   if (!target) {
-    add("VM address", false, "CONTAINERLAB_SSH_TARGET is not set",
-      "Set CONTAINERLAB_SSH_TARGET to user@host of the lab VM in this server's MCP configuration, then reconnect the server.");
+    add("Lab host address", false, "CONTAINERLAB_SSH_TARGET is not set",
+      "Set CONTAINERLAB_SSH_TARGET to <user>@<address> of the lab host in this server's MCP configuration, then reconnect the server.");
     return report();
   }
   // ssh itself exits 255; a timeout or a failed spawn has no exit code at all.
   if (failure && !failure.refused && (failure.exitCode === 255 || failure.exitCode == null)) {
-    add("SSH to the VM", false, failure.message, `This must work without a password prompt: ssh ${target} true`);
+    add("SSH to the lab host", false, failure.message, `This must work without a password prompt: ssh ${target} true`);
     return report();
   }
-  add("SSH to the VM", true, target);
+  add("SSH to the lab host", true, target);
 
   if (failure?.exitCode === 127) {
-    add("Helper on the VM", false, "not installed", installSteps(target));
+    add("Helper on the lab host", false, "not installed", installSteps(target));
     return report();
   }
   // A helper from before the doctor action answers "invalid action".
   const version = failure?.refused ? "an older version" : `version ${facts?.helper_version}`;
   if (failure && !failure.refused) {
-    add("Helper on the VM", false, failure.message);
+    add("Helper on the lab host", false, failure.message);
     return report();
   }
   if (failure || Number(facts.helper_version) !== HELPER_VERSION) {
-    add("Helper on the VM", false, `${version} is installed, this server needs version ${HELPER_VERSION}`, installSteps(target));
+    add("Helper on the lab host", false, `${version} is installed, this server needs version ${HELPER_VERSION}`, installSteps(target));
     return report();
   }
-  add("Helper on the VM", true, version);
+  add("Helper on the lab host", true, version);
 
   add("Docker", Boolean(facts.docker), facts.docker || "not usable",
-    "The VM account must be able to run `docker` without sudo.");
+    "Your account on the lab host must be able to run `docker` without sudo.");
   // Containerlab is either installed, or run from its image as a container next to the labs.
   const image = facts.containerlab_runs_as?.match(/^container (.+)/)?.[1];
   add("Containerlab", Boolean(facts.containerlab),
@@ -95,8 +95,8 @@ export function setupReport(target, facts, failure) {
         ...(facts.ceos_image ? ["Arista cEOS nodes, and layer 2 labs (routing `bare`)"] : []),
       ]
       : [],
-    not_available: facts.ceos_image ? [] : ["Arista cEOS nodes and layer 2 labs: the VM has no ceos image"],
-    // Images a person registered for host nodes, as "name=image". "(missing)" marks one that is registered but not on the VM.
+    not_available: facts.ceos_image ? [] : ["Arista cEOS nodes and layer 2 labs: the lab host has no ceos image"],
+    // Images a person registered for host nodes, as "name=image". "(missing)" marks one that is registered but not on the lab host.
     extra_images: (facts.extra_images ?? "").split(",").filter(Boolean),
     add_image_command: ADD_IMAGE_COMMAND,
   });

@@ -18,7 +18,7 @@ export const ROUTING_MODES = ["ospf", "ebgp", "ibgp-ospf", "none", "bare"];
 export const LIMITS = { nodes: 16, ceosPerLab: 6, fullMesh: 8, spines: 4, leaves: 8, links: 48 };
 
 const NAME_RE = /^[a-z][a-z0-9-]{0,14}$/;
-// 'all' and 'loopback' are tool keywords; the VM helper refuses config lines containing the other words.
+// 'all' and 'loopback' are tool keywords; the lab host's helper refuses config lines containing the other words.
 const RESERVED_NAME_RE = /^(all|loopback)$|bash|shell|python|sudo/;
 export const LAB_NAME_RE = /^[a-z][a-z0-9-]{0,19}$/;
 
@@ -218,7 +218,7 @@ export function buildTopology(input) {
   };
 }
 
-/** The line-oriented spec the VM helper turns into Containerlab YAML. */
+/** The line-oriented spec the lab host's helper turns into Containerlab YAML. */
 export function helperSpec(topology) {
   return [
     ...topology.nodes.map((n) => `node ${n.name} ${n.kind}${n.image ? ` ${n.image}` : ""}`),
@@ -326,7 +326,7 @@ export function renderStartupConfig(topology, node) {
   return node.kind === "ceos" ? renderCeos(topology, node) : renderFrr(topology, node);
 }
 
-/** The command a human runs on the VM to open a node's CLI. */
+/** The command a human runs on the lab host to open a node's CLI. */
 export function cliCommand(topology, node) {
   // The built-in host image has bash; another registered image may only have sh.
   const cli = { ceos: "Cli", frr: "vtysh", host: node.image ? "sh" : "bash" }[node.kind];
@@ -349,8 +349,8 @@ export function linkInterfaces(topology, node) {
  */
 export function describeAccess(topology, status, sshTarget) {
   return {
-    vm: `ssh ${sshTarget}`,
-    how: "Run the cli commands on the VM. Management IPs are reachable from the VM.",
+    lab_host: `ssh ${sshTarget}`,
+    how: "Run the cli commands on the lab host. Management IPs are reachable from the lab host.",
     nodes: topology.nodes.map((n) => ({
       name: n.name,
       kind: n.kind,

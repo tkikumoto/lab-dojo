@@ -185,7 +185,7 @@ export async function runExtraCheck(lab, topology, spec) {
   throw new Error(`unknown check type ${spec.type}`);
 }
 
-/** Every check the design implies, from collected state. Pure, so it can be tested without a VM. */
+/** Every check the design implies, from collected state. Pure, so it can be tested without a lab host. */
 export function designChecks(topology, snap, reach) {
   return [
     ...evaluateLinks(topology, snap),

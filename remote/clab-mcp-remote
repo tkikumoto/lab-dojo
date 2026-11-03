@@ -8,7 +8,7 @@
 # Containerlab YAML (it renders topologies itself from a node/link list), never
 # accepts an FRR `daemons` file (FRR's init script sources it as shell), and
 # never lets a router CLI request reach a Linux shell: Containerlab nodes run
-# privileged, so a shell inside a router is a shell on this VM.
+# privileged, so a shell inside a router is a shell on this lab host.
 set -euo pipefail
 umask 022
 export LC_ALL=C
@@ -26,7 +26,7 @@ HOST_IMAGE=lab-dojo/host:1
 # pulls it only on such a host; this helper never pulls.
 CLAB_IMAGE=ghcr.io/srl-labs/clab:0.82.0
 # Other images a host node may run: "<name> <image-ref>" per line. Nodes run
-# privileged, so an image is as trusted as root on this VM. Only a person adds
+# privileged, so an image is as trusted as root on this lab host. Only a person adds
 # one, with clab-mcp-admin; this helper only reads the file, and only when root
 # owns it.
 IMAGES_FILE=/etc/containerlab-mcp/images
@@ -128,9 +128,9 @@ host_image() {
   else
     valid_image_name "$name" || die "invalid image name: $name"
     ref=$(extra_images | awk -v name="$name" '$1 == name {print $2; exit}')
-    [[ -n $ref ]] || die "image '$name' is not registered on this VM (a person adds it with clab-mcp-admin; see check_setup)"
+    [[ -n $ref ]] || die "image '$name' is not registered on this lab host (a person adds it with clab-mcp-admin; see check_setup)"
   fi
-  docker image inspect "$ref" >/dev/null 2>&1 || die "image $ref is not on this VM (see check_setup)"
+  docker image inspect "$ref" >/dev/null 2>&1 || die "image $ref is not on this lab host (see check_setup)"
   printf '%s' "$ref"
 }
 
@@ -284,7 +284,7 @@ create_lab() {
   ((ceos <= MAX_CEOS_PER_LAB)) || die "at most $MAX_CEOS_PER_LAB cEOS nodes per lab"
   if ((ceos)); then
     ceos_img=$(ceos_image)
-    [[ -n $ceos_img ]] || die 'this VM has no cEOS image; import one as ceos:<version> (see README), or use frr nodes'
+    [[ -n $ceos_img ]] || die 'this lab host has no cEOS image; import one as ceos:<version> (see README), or use frr nodes'
   fi
   ((${#links[@]} <= MAX_LINKS)) || die "at most $MAX_LINKS links per lab"
 
@@ -368,7 +368,7 @@ deploy() {
   wanted=$(grep -lx ceos "$LAB_DIR"/nodes/* 2>/dev/null | wc -l || true)
   running=$(docker ps -q --filter label=clab-node-kind=arista_ceos | wc -l)
   ((wanted + running <= MAX_CEOS_RUNNING)) ||
-    die "deploying would run $((wanted + running)) cEOS nodes; the VM limit is $MAX_CEOS_RUNNING"
+    die "deploying would run $((wanted + running)) cEOS nodes; the lab host limit is $MAX_CEOS_RUNNING"
   cd "$LAB_DIR"
   clab deploy -t "$TOPO"
 }
@@ -405,7 +405,7 @@ doctor() {
   printf 'frr_image=%s\n' "$(docker image inspect "$FRR_IMAGE" >/dev/null 2>&1 && printf '%s' "$FRR_IMAGE" || true)"
   printf 'ceos_image=%s\n' "$(ceos_image)"
   printf 'host_image=%s\n' "$(docker image inspect "$HOST_IMAGE" >/dev/null 2>&1 && printf '%s' "$HOST_IMAGE" || true)"
-  # name=ref pairs, comma-separated; a registered image that is not on the VM is marked.
+  # name=ref pairs, comma-separated; a registered image that is not on the lab host is marked.
   printf 'extra_images=%s\n' "$(extra_images | while read -r name ref; do
     docker image inspect "$ref" >/dev/null 2>&1 || ref="$ref(missing)"
     printf '%s=%s,' "$name" "$ref"

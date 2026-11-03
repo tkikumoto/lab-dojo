@@ -1,4 +1,4 @@
-// Lab metadata lives on the VM next to the lab (meta/topology.json and
+// Lab metadata lives on the lab host next to the lab (meta/topology.json and
 // meta/state.json), so it survives MCP server restarts and is removed with it.
 import { remote } from "./remote.mjs";
 import { LAB_NAME_RE } from "./topology.mjs";
@@ -28,7 +28,7 @@ export async function saveState(lab, state) {
   await remote("meta-put", [lab, "state"], { input: JSON.stringify(state) });
 }
 
-/** Container status per node name, from the VM. Empty when not deployed. */
+/** Container status per node name, from the lab host. Empty when not deployed. */
 export async function inspectLab(lab) {
   const out = await remote("inspect", [lab]);
   const status = {};

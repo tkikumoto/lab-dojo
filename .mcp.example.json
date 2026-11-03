@@ -4,7 +4,7 @@
       "command": "node",
       "args": ["/absolute/path/to/lab-dojo/server/src/index.mjs"],
       "env": {
-        "CONTAINERLAB_SSH_TARGET": "<user>@<vm>"
+        "CONTAINERLAB_SSH_TARGET": "<user>@<host>"
       }
     }
   }

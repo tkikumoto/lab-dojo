@@ -22,14 +22,14 @@ const server = new McpServer(
   { name: "lab-dojo", version: "0.2.0" },
   {
     instructions: [
-      "Containerlab network lab server (FRR and Arista cEOS routers on a remote VM).",
+      "Containerlab network lab server (FRR and Arista cEOS routers on a remote lab host).",
       "Layer 1 builds labs (create_topology -> deploy_topology), layer 2 inspects and changes routers, layer 3 runs troubleshooting exercises.",
-      "If a tool fails because the VM or its helper cannot be reached, or on first use, call check_setup: it reports what is missing and the command the user must run. Never install anything on the VM yourself.",
-      "Lab nodes run privileged, so you never add an image to the VM: when one is missing, give the user the command from check_setup to run themselves, or say that it cannot be pulled (images behind a sign-in) or is not supported (router systems other than FRR and cEOS).",
+      "If a tool fails because the lab host or its helper cannot be reached, or on first use, call check_setup: it reports what is missing and the command the user must run. Never install anything on the lab host yourself.",
+      "Lab nodes run privileged, so you never add an image to the lab host: when one is missing, give the user the command from check_setup to run themselves, or say that it cannot be pulled (images behind a sign-in) or is not supported (router systems other than FRR and cEOS).",
       "Assume no lab is running: call list_labs first. Before create_topology, ask the user about anything the request leaves open (node count, how nodes connect, frr or ceos, what is pre-configured, lab name), show the plan and wait for their go-ahead; never guess silently. 'I will do the routing' or 'just the connections' means routing `bare`. Layer 2 topics such as STP need ceos nodes and `bare`.",
       "Exercises are in tutor mode: a human learner troubleshoots. Anything under `tutor_only` must not be revealed to the learner unless they give up.",
       "Ask for explicit confirmation before destroy_topology. You reach router CLIs only through these tools; shell access is not available to you by design.",
-      "FRR nodes create the Linux devices their configuration implies within a few seconds: a macvlan per `vrrp <vrid> ip|ipv6 <address>` line, 802.1Q subinterfaces named `<parent>.<vid>`, and `loopback<N>`/`dummy<N>` interfaces. So VRRP, router-on-a-stick and extra loopbacks need only FRR configuration. A link-local IPv6 VRRP address is not installed; use a global one. MPLS/LDP and GRE are not available on this VM's kernel.",
+      "FRR nodes create the Linux devices their configuration implies within a few seconds: a macvlan per `vrrp <vrid> ip|ipv6 <address>` line, 802.1Q subinterfaces named `<parent>.<vid>`, and `loopback<N>`/`dummy<N>` interfaces. So VRRP, router-on-a-stick and extra loopbacks need only FRR configuration. A link-local IPv6 VRRP address is not installed; use a global one. MPLS/LDP and GRE need kernel support the lab host may lack (an OrbStack VM has neither); say so if a lab using them fails.",
       "Whenever a lab is deployed, show the user the `access` section of the result as a table: every node's management IP, its cli command, and each link interface with the neighbour interface it connects to. list_nodes returns the same details later.",
     ].join(" "),
   },
@@ -102,7 +102,7 @@ async function deployLab(labName, topology, { waitReady: wait = true, timeoutSec
 
 tool(
   "check_setup",
-  "Check that the VM is ready: SSH, the helper and its version, Docker, Containerlab, lab storage, and which router images are present (FRR is required, Arista cEOS is optional). Read-only. Each failed check carries a `fix`: a command for the user to run. Show it to them; never run installs yourself.",
+  "Check that the lab host is ready: SSH, the helper and its version, Docker, Containerlab, lab storage, and which router images are present (FRR is required, Arista cEOS is optional). Read-only. Each failed check carries a `fix`: a command for the user to run. Show it to them; never run installs yourself.",
   {},
   READ_ONLY,
   async () => json(await checkSetup()),
@@ -110,7 +110,7 @@ tool(
 
 // ======================================================= Layer 1: lab management
 
-tool("list_labs", "List lab definitions on the VM with node counts and how many containers are running.", {}, READ_ONLY,
+tool("list_labs", "List lab definitions on the lab host with node counts and how many containers are running.", {}, READ_ONLY,
   async () => json(JSON.parse(await remote("list-labs"))));
 
 tool(
@@ -119,7 +119,7 @@ tool(
     "Define a new lab from a template or an explicit node/link list. Addressing, OSPF/BGP configuration and Containerlab YAML are generated (raw YAML is not accepted, for safety).",
     `Templates: ${TEMPLATES.join(", ")}. Routing: ospf (area 0), ebgp (AS 65000+i per node), ibgp-ospf (OSPF underlay + iBGP full mesh AS 65000), none (addresses only, so the learner configures routing), bare (cabling only: no IP addresses at all; a bare cEOS link port is a default switchport, so use bare with ceos nodes for layer 2 labs such as STP or VLANs).`,
     "Addressing (not in bare): loopback 10.255.0.<i>/32; link between nodes i<j = 10.<i>.<j>.0/30; BGP modes add service prefix 172.16.<i>.0/24.",
-    "Kinds: frr (light, ~50 MB; OSPFv2/v3, BGP, IS-IS, RIP, BFD, VRRP and static routing daemons run) or ceos (Arista cEOS, ~1.5 GB RAM each, max 6 per lab; optional: only when check_setup lists a cEOS image) or host (a Linux machine, Alpine with network tools: no router CLI, no generated addresses or routing, the user configures it by hand; router tools refuse it, ping and traceroute from it work). A host node may name another registered `image` (check_setup lists them); images are registered only by a person on the VM.",
+    "Kinds: frr (light, ~50 MB; OSPFv2/v3, BGP, IS-IS, RIP, BFD, VRRP and static routing daemons run) or ceos (Arista cEOS, ~1.5 GB RAM each, max 6 per lab; optional: only when check_setup lists a cEOS image) or host (a Linux machine, Alpine with network tools: no router CLI, no generated addresses or routing, the user configures it by hand; router tools refuse it, ping and traceroute from it work). A host node may name another registered `image` (check_setup lists them); images are registered only by a person on the lab host.",
   ].join(" "),
   {
     name: z.string().describe("New lab name: lowercase letters, digits, '-', max 20 chars."),
@@ -264,7 +264,7 @@ tool(
 
 tool(
   "configure_device",
-  "Apply configuration lines to one router, as if typed after 'configure terminal' (vendor syntax: FRR vtysh or Arista EOS). Do not include 'configure', 'end', 'exit' or 'do'. Top-level commands work from any sub-mode. Leaving config mode, shell access, writing/copying files and EOS event-handler/alias/schedule are refused by the VM. Changes are not saved; reset_exercise restores the startup config. Returns the device output and the diff against the startup config.",
+  "Apply configuration lines to one router, as if typed after 'configure terminal' (vendor syntax: FRR vtysh or Arista EOS). Do not include 'configure', 'end', 'exit' or 'do'. Top-level commands work from any sub-mode. Leaving config mode, shell access, writing/copying files and EOS event-handler/alias/schedule are refused by the lab host. Changes are not saved; reset_exercise restores the startup config. Returns the device output and the diff against the startup config.",
   {
     lab,
     node: nodeName,
@@ -549,10 +549,10 @@ tool(
 const CUT_SHORT = "If that request looks cut short (a single word), the client split it: the whole text I typed after the command is the request.";
 const IMAGE_RULES = [
   "   - A node is frr, ceos or host. A host is a Linux machine (Alpine with network tools; no generated addresses, I configure it myself). `image` on a host node picks another registered image by name; check_setup lists them under extra_images.",
-  "   - If the request needs an image the VM does not have, never add it yourself; stop and tell me which of these applies. A public Linux image: give me the add_image_command from check_setup with the name and image reference filled in, to run on the VM; when I say it ran, call check_setup again and continue. An image behind a sign-in (Arista cEOS, Cisco and the like): no command can pull it; give the manual steps from check_setup if it has them. A router system lab-dojo has no code for (anything but FRR and cEOS): it is not supported; offer the nearest lab that is.",
+  "   - If the request needs an image the lab host does not have, never add it yourself; stop and tell me which of these applies. A public Linux image: give me the add_image_command from check_setup with the name and image reference filled in, to run on the lab host; when I say it ran, call check_setup again and continue. An image behind a sign-in (Arista cEOS, Cisco and the like): no command can pull it; give the manual steps from check_setup if it has them. A router system lab-dojo has no code for (anything but FRR and cEOS): it is not supported; offer the nearest lab that is.",
 ];
 const BUILD_STEPS = [
-  "a. Call list_labs and check_setup first. Assume nothing is running. Build only with what the VM has (cEOS is optional and may be missing), within the limits: 16 nodes and 6 cEOS per lab, 8 cEOS running on the VM, 6 lab definitions. If check_setup is not ready, show its fixes and stop.",
+  "a. Call list_labs and check_setup first. Assume nothing is running. Build only with what the lab host has (cEOS is optional and may be missing), within the limits: 16 nodes and 6 cEOS per lab, 8 cEOS running on the lab host, 6 lab definitions. If check_setup is not ready, show its fixes and stop.",
   "b. Before building, look for gaps in the request. These must all be known: how many nodes; how they connect (line, ring, full-mesh, star, leaf-spine, or explicit links); the kind of each node (frr, ceos or host); what is pre-configured (working routing: ospf, ebgp or ibgp-ospf; `none`: IP addresses only; `bare`: cabling only, no IP addresses); and the lab name. Ask me about everything that is missing or unclear in one message, and do not guess silently. If nothing is missing, skip the questions.",
   "   - 'I will do the routing' or 'just the connections' means `bare`.",
   "   - Layer 2 topics (STP, VLANs, switching) need ceos nodes and `bare`: a bare cEOS link port is a default switchport.",
@@ -566,7 +566,7 @@ const request = (example) => z.string().describe(`What you want, in your own wor
 
 server.registerPrompt(
   "init",
-  { description: "First-time setup: check the VM and its images, and get the exact commands for anything missing." },
+  { description: "First-time setup: check the lab host and its images, and get the exact commands for anything missing." },
   () => ({
     messages: [{
       role: "user",
@@ -575,8 +575,8 @@ server.registerPrompt(
         text: [
           "Check that lab-dojo is ready to use.",
           "1. Call check_setup and show the result as a table: check, result.",
-          "2. For every failed check, show its `fix` in a code block for me to run. Do not run installs or change the VM yourself. After I say I ran them, call check_setup again.",
-          "3. Say plainly what I can build now and what is not available (from can_build and not_available), with the memory left on the VM.",
+          "2. For every failed check, show its `fix` in a code block for me to run. Do not run installs or change the lab host yourself. After I say I ran them, call check_setup again.",
+          "3. Say plainly what I can build now and what is not available (from can_build and not_available), with the memory left on the lab host.",
           "4. If everything required passes, suggest a first command, e.g. /mcp__lab-dojo__build_lab \"3 routers in a ring with OSPF\".",
         ].join("\n"),
       },
@@ -587,7 +587,7 @@ server.registerPrompt(
 server.registerPrompt(
   "add_image",
   {
-    description: "Find out how to make an image available to labs. Claude gives you the command to run on the VM; it never adds an image itself.",
+    description: "Find out how to make an image available to labs. Claude gives you the command to run on the lab host; it never adds an image itself.",
     argsSchema: { request: request("nginx as a web server") },
   },
   ({ request: wanted }) => ({

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Registers extra images that lab-dojo host nodes may run.
 #
-# Run by a person on the VM, with sudo. The MCP server never calls this script
+# Run by a person on the lab host, with sudo. The MCP server never calls this script
 # and the helper it does call cannot write the list: lab nodes run privileged,
-# so adding an image is a decision about what gets root on this VM.
+# so adding an image is a decision about what gets root on this lab host.
 #
 #   sudo clab-mcp-admin add-image <name> <image-ref>    pull it and register it
 #   sudo clab-mcp-admin remove-image <name>             unregister it (the image stays in Docker)
