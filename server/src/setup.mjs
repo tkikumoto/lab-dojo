@@ -8,7 +8,7 @@ export const HELPER_VERSION = 3;
 const installSteps = (target) => [
   "Run from the lab-dojo folder:",
   `scp -r remote/. ${target}:/tmp/containerlab-mcp-remote`,
-  `ssh ${target} 'cd /tmp/containerlab-mcp-remote && bash ./install-remote.sh'`,
+  `ssh ${target} "cd /tmp/containerlab-mcp-remote && bash ./install-remote.sh"`,
 ].join("\n");
 
 const CEOS_STEPS = "Arista images need a sign-in, so no command can pull one. Download cEOS-lab from arista.com, "

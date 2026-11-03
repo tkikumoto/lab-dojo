@@ -1,0 +1,3 @@
+# Keep LF everywhere: the remote/ scripts run under bash on the Linux VM,
+# and a Windows checkout would otherwise turn them into CRLF.
+* text=auto eol=lf
