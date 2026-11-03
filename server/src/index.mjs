@@ -444,7 +444,7 @@ tool(
   "create_exercise",
   [
     "Start a troubleshooting exercise on a deployed, healthy lab (tutor mode: a human learner fixes it).",
-    "Picks fault(s) by difficulty/focus (or uses fault_types), injects them, waits for symptoms, and returns a learner_briefing (show this) and tutor_only details (never reveal).",
+    "Picks fault(s) by difficulty/focus (or uses fault_types), injects them, waits for symptoms, and returns a learner_briefing (show this) and tutor_only details (never reveal). Show `learner_briefing.checks_to_pass` exactly as given, in a code block.",
     "easy: 1 level-1 fault and all failing checks shown; medium: 1 level-2 fault, only end-to-end symptoms; hard: 2 faults, ticket text only. Takes up to ~1 minute.",
   ].join(" "),
   {
@@ -494,7 +494,7 @@ tool(
 
 tool(
   "validate_exercise",
-  "Grade the active exercise: re-runs the design health checks plus fault-specific checks. Outcome-based, so any correct fix passes. Records the attempt and marks the exercise solved when everything passes.",
+  "Grade the active exercise: re-runs the design health checks plus fault-specific checks. Outcome-based, so any correct fix passes. Records the attempt and marks the exercise solved when everything passes. Show `checklist` to the learner exactly as given, in a code block: one ✅ or ❌ line per check, like test cases.",
   { lab },
   CHANGES_LAB,
   async ({ lab: labName }) => {
@@ -646,9 +646,9 @@ server.registerPrompt(
           CUT_SHORT,
           "1. Get a lab. If the request names an existing lab (see list_labs), use it, and deploy it if it is not running. Otherwise treat the request as a lab description and follow these steps. An exercise needs working routing (ospf, ebgp or ibgp-ospf), never none or bare.",
           ...BUILD_STEPS,
-          "2. The difficulty is the word easy, medium or hard in the request; use medium if there is none, and say which you used. A topic in the request (BGP, OSPF, ...) becomes the focus. Call create_exercise. Show me only learner_briefing; keep tutor_only to yourself. Quote tickets, observed_symptoms and task as given, with every interface name and IP address; do not shorten them to node names.",
+          "2. The difficulty is the word easy, medium or hard in the request; use medium if there is none, and say which you used. A topic in the request (BGP, OSPF, ...) becomes the focus. Call create_exercise. Show me only learner_briefing; keep tutor_only to yourself. Quote tickets, observed_symptoms and task as given, with every interface name and IP address; do not shorten them to node names. Show checks_to_pass exactly as given, in a code block.",
           "3. Let me drive the investigation. When I ask you to run commands, run them and show the output. When I ask for help, use get_hint and Socratic questions; do not give the answer away.",
-          "4. When I say I fixed it (or ask you to apply my fix with configure_device), call validate_exercise and tell me the result.",
+          "4. When I say I fixed it (or ask you to apply my fix with configure_device), call validate_exercise and show me its checklist exactly as given, in a code block, then the result.",
           "5. If I identify a physical/link-quality fault correctly, 'repair' it with reset_exercise fault_id.",
           "6. After it is solved, debrief: root cause, the fastest diagnostic path, and what to remember.",
         ].join("\n"),

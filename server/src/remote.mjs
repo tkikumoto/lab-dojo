@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -7,8 +8,11 @@ export const sshTarget = process.env.CONTAINERLAB_SSH_TARGET;
 const remoteHelper = process.env.CONTAINERLAB_REMOTE_HELPER ?? "/usr/local/libexec/clab-mcp-remote";
 // Reusing one SSH connection keeps multi-node snapshots fast. The socket path
 // must stay short (Unix sockets are limited to ~104 bytes on macOS).
-const controlPath = process.env.CONTAINERLAB_SSH_CONTROL_PATH
+// Windows OpenSSH has no connection sharing, so there each call connects anew.
+const controlPath = process.platform === "win32" ? null : process.env.CONTAINERLAB_SSH_CONTROL_PATH
   ?? path.join(os.homedir(), ".ssh", "cm-clab-mcp-%C");
+// ssh exits instead of connecting when the socket's folder is missing (a new machine).
+if (controlPath && !process.env.CONTAINERLAB_SSH_CONTROL_PATH) fs.mkdirSync(path.dirname(controlPath), { recursive: true, mode: 0o700 });
 const MAX_PARALLEL = 6;
 
 /** Error raised by the remote helper itself (bad request), not by transport. */
@@ -45,9 +49,7 @@ export function remote(action, args = [], { input, timeout = 60_000 } = {}) {
   const sshArgs = [
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=10",
-    "-o", "ControlMaster=auto",
-    "-o", `ControlPath=${controlPath}`,
-    "-o", "ControlPersist=120",
+    ...(controlPath ? ["-o", "ControlMaster=auto", "-o", `ControlPath=${controlPath}`, "-o", "ControlPersist=120"] : []),
     sshTarget,
     "--",
     [remoteHelper, action, ...args].map(shellQuote).join(" "),

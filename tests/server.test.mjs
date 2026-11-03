@@ -5,7 +5,7 @@ import { test } from "node:test";
 import {
   buildTopology, cliCommand, describeTopology, helperSpec, linkInterfaces, renderStartupConfig,
 } from "../server/src/topology.mjs";
-import { designChecks } from "../server/src/health.mjs";
+import { designChecks, formatChecklist } from "../server/src/health.mjs";
 import { planFault, rng } from "../server/src/faults.mjs";
 import { parsePing } from "../server/src/drivers.mjs";
 import { taskFor } from "../server/src/exercises.mjs";
@@ -132,6 +132,11 @@ test("check_setup stops at the first blocking problem and names the fix", () => 
   assert.equal(setupReport("me@vm", { ...facts, ceos_image: "ceos:4.36.2F" }).can_build.length, 3);
   assert.deepEqual(failed(setupReport("me@vm", { ...facts, frr_image: "", containerlab: "", host_image: "" })),
     ["Containerlab", "FRR router image", "Linux host image"]);
+  // Containerlab can run from its image instead of being installed; a missing image points at the install.
+  const clab = (f) => setupReport("me@vm", { ...facts, ...f }).checks.find((c) => c.check === "Containerlab");
+  assert.equal(clab({ containerlab_runs_as: "installed" }).detail, "0.80.0");
+  assert.equal(clab({ containerlab_runs_as: "container ghcr.io/srl-labs/clab:0.82.0" }).detail, "0.80.0, run from the image ghcr.io/srl-labs/clab:0.82.0");
+  assert.match(clab({ containerlab: "", containerlab_runs_as: "container ghcr.io/srl-labs/clab:0.82.0" }).fix, /image ghcr\.io\/srl-labs\/clab:0\.82\.0 is missing[^]*install-remote\.sh/);
   // Extra images come from the root-owned list on the VM; the command to add one is for the user to run.
   assert.deepEqual(ok.extra_images, ["web=nginx:alpine", "dns=coredns/coredns:1.12(missing)"]);
   assert.match(ok.add_image_command, /^sudo .*clab-mcp-admin add-image <name> <image-ref>$/);
@@ -210,4 +215,26 @@ test("health checks skip what a host cannot have", () => {
   // The link to the host is still watched, from the router's end.
   snap.r1.interfaces[1].oper = "down";
   assert.deepEqual(designChecks(t, snap, reach).filter((c) => !c.ok).map((c) => c.description), ["Link r1 eth2 <-> host1 eth1 is down"]);
+});
+
+test("the checklist marks each check like a test case, grouped by kind", () => {
+  const checks = [
+    { id: "link:r1:eth1", name: "Link r1 eth1 <-> r2 eth1 is up", ok: true },
+    { id: "bgp:r1:10.255.0.2", name: "BGP session r1 <-> r2 (ibgp) is established", ok: false },
+    { id: "bgp:r2:10.255.0.3", name: "BGP session r2 <-> r3 (ibgp) is established", ok: true },
+  ];
+  assert.equal(formatChecklist(checks), [
+    "Links (1/1)",
+    "  ✅ Link r1 eth1 <-> r2 eth1 is up",
+    "BGP sessions (1/2)",
+    "  ❌ BGP session r1 <-> r2 (ibgp) is established",
+    "  ✅ BGP session r2 <-> r3 (ibgp) is established",
+    "",
+    "Not solved yet: 2/3",
+  ].join("\n"));
+  assert.match(formatChecklist(checks, { results: false }), /^Links\n  ☐ Link r1 eth1/);
+  assert.match(formatChecklist(checks.map((c) => ({ ...c, ok: true }))), /All checks passed: 3\/3$/);
+  // Hard leaves the fault's own checks out of the briefing, and says so.
+  assert.match(formatChecklist(checks, { results: false, hidden: 2 }), /\n\n\+ 2 more checks about the fault, shown when you validate$/);
+  assert.doesNotMatch(formatChecklist(checks, { results: false }), /more check/);
 });

@@ -8,13 +8,15 @@ Your MCP client (for example Claude Code) launches the local Node server (`serve
 
 On your own machine:
 
-- Node.js 20 or newer, and an MCP client such as Claude Code.
+- Node.js 22 or newer, and an MCP client such as Claude Code.
 - SSH access to the VM with a key, so `ssh <user>@<vm> true` works without a password prompt.
 
-On the VM (any Linux machine or virtual machine you control):
+macOS, Linux and Windows all work. On Windows, use the built-in OpenSSH client (`ssh` in PowerShell or cmd); it cannot share one connection between calls, so multi-router checks are a little slower there.
+
+On the lab host (a Linux VM or a bare-metal Linux machine you control):
 
 - Docker, usable by your account without `sudo`.
-- [Containerlab](https://containerlab.dev/install/), usable by your account as `clab`.
+- [Containerlab](https://containerlab.dev/install/), either installed and usable by your account as `clab`, or not installed at all. Without it, the install script pulls the official image `ghcr.io/srl-labs/clab`, and the helper runs Containerlab from it as a short-lived container for each command. That container drives the host's Docker, so the lab routers run next to it as ordinary containers, not inside it.
 - `sudo` once, for the install script.
 
 Router images:
@@ -33,7 +35,7 @@ Without cEOS you can build every FRR lab and run every exercise. Arista nodes an
 
    ```bash
    scp -r remote/. <user>@<vm>:/tmp/containerlab-mcp-remote
-   ssh <user>@<vm> 'cd /tmp/containerlab-mcp-remote && bash ./install-remote.sh'
+   ssh <user>@<vm> "cd /tmp/containerlab-mcp-remote && bash ./install-remote.sh"
    ```
 
 2. **Register the server with your MCP client.** For Claude Code:
@@ -41,6 +43,8 @@ Without cEOS you can build every FRR lab and run every exercise. Arista nodes an
    ```bash
    claude mcp add lab-dojo --env CONTAINERLAB_SSH_TARGET=<user>@<vm> -- node /absolute/path/to/lab-dojo/server/src/index.mjs
    ```
+
+   On Windows, write the path with forward slashes, e.g. `C:/Users/me/lab-dojo/server/src/index.mjs`.
 
    Or copy `.mcp.example.json` to `.mcp.json` in this folder and fill in the two values. `.mcp.json` is not tracked, so your own path and VM name stay local.
 
@@ -200,6 +204,22 @@ Difficulty controls how much the learner is told:
 | `medium` | one level-2 fault | end-to-end symptoms only |
 | `hard` | two faults on different routers | the ticket text only |
 
+The briefing lists every check the lab must pass (`checks_to_pass`). `validate_exercise` returns them as a checklist, marked like test cases:
+
+```text
+BGP sessions (5/6)
+  ✅ BGP session r1 <-> r2 (ibgp) is established
+  ❌ BGP session r2 <-> r3 (ibgp) is established
+  ...
+Reachability (12/12)
+  ✅ Ping from r1 (lo 10.255.0.1) to r2 (lo 10.255.0.2) succeeds
+  ...
+
+Not solved yet: 37/38
+```
+
+On `hard` the briefing leaves out the checks a fault adds (they would point at it) and only says how many there are; `validate_exercise` shows them, and shows which checks fail.
+
 ### Tutor mode
 
 You, the human, are the learner. Claude reads the `tutor_only` sections and should not reveal them. Physical and quality faults (`link_down`, Linux MTU, netem) can't be fixed from a router CLI. Once you diagnose one, Claude "replaces the cable" with `reset_exercise` and that fault's `fault_id`.
@@ -212,7 +232,7 @@ It uses `sudo` for three things only:
 - creating `/var/lib/containerlab-mcp/labs`, owned by your user. Lab definitions, generated configs and lab metadata live there;
 - creating `/etc/containerlab-mcp/images`, owned by root: the list of extra images. An existing list is kept.
 
-Before that it builds the FRR lab image from `remote/frr/` and the Linux host image from `remote/host/`, pulling the public base images if they are missing. The tag and FRR release both come from `FRR_IMAGE` in `clab-mcp-remote`, so that is the one place to change the version.
+Before that it builds the FRR lab image from `remote/frr/` and the Linux host image from `remote/host/`, pulling the public base images if they are missing. The tag and FRR release both come from `FRR_IMAGE` in `clab-mcp-remote`, so that is the one place to change the version. When Containerlab is not installed, it also pulls the Containerlab image named by `CLAB_IMAGE` there.
 
 It does not change SSH, Docker or Containerlab configuration. Rerun it after changing anything under `remote/`, and after pulling a new version of lab-dojo: the helper carries a version number, and `check_setup` reports a helper that is older than the server.
 
@@ -222,7 +242,7 @@ It does not change SSH, Docker or Containerlab configuration. Rerun it after cha
 |---|---|
 | `CONTAINERLAB_SSH_TARGET` | `<user>@<vm>` of the lab VM. Required. |
 | `CONTAINERLAB_REMOTE_HELPER` | Path of the helper on the VM. Default `/usr/local/libexec/clab-mcp-remote`. |
-| `CONTAINERLAB_SSH_CONTROL_PATH` | Where SSH keeps its shared connection. Default `~/.ssh/cm-clab-mcp-*`. |
+| `CONTAINERLAB_SSH_CONTROL_PATH` | Where SSH keeps its shared connection. Default `~/.ssh/cm-clab-mcp-*`. Not used on Windows, which has no connection sharing. |
 
 After changing server code, reconnect the server in your client (in Claude Code: `/mcp`) so it loads the new code.
 
@@ -243,6 +263,8 @@ npm install
 npm run check   # node --check on every module + bash -n on the remote scripts
 npm test        # topology, fault targeting and ping parsing, then the helper's config-line filter
 ```
+
+`npm run check` needs bash and python3, so run it on macOS or Linux. On Windows `npm test` skips the filter test.
 
 The filter test (`tests/check-line.sh`) needs bash 4 or newer. macOS ships bash 3.2, so there it reruns itself on the VM over SSH: set `CONTAINERLAB_SSH_TARGET` in your shell first. The VM must see this folder at the same path (OrbStack machines do); otherwise run the test on Linux. It reads the helper from this folder, so it tests your working copy and not the installed helper.
 

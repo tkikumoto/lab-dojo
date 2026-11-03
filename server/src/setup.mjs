@@ -3,12 +3,12 @@
 import { remote, RemoteRefusal, sshTarget } from "./remote.mjs";
 
 /** Must equal HELPER_VERSION in remote/clab-mcp-remote. */
-export const HELPER_VERSION = 3;
+export const HELPER_VERSION = 4;
 
 const installSteps = (target) => [
   "Run from the lab-dojo folder:",
   `scp -r remote/. ${target}:/tmp/containerlab-mcp-remote`,
-  `ssh ${target} 'cd /tmp/containerlab-mcp-remote && bash ./install-remote.sh'`,
+  `ssh ${target} "cd /tmp/containerlab-mcp-remote && bash ./install-remote.sh"`,
 ].join("\n");
 
 const CEOS_STEPS = "Arista images need a sign-in, so no command can pull one. Download cEOS-lab from arista.com, "
@@ -66,8 +66,13 @@ export function setupReport(target, facts, failure) {
 
   add("Docker", Boolean(facts.docker), facts.docker || "not usable",
     "The VM account must be able to run `docker` without sudo.");
-  add("Containerlab", Boolean(facts.containerlab), facts.containerlab || "not usable",
-    "Install Containerlab on the VM (https://containerlab.dev/install/) and make sure this account can run `clab`.");
+  // Containerlab is either installed, or run from its image as a container next to the labs.
+  const image = facts.containerlab_runs_as?.match(/^container (.+)/)?.[1];
+  add("Containerlab", Boolean(facts.containerlab),
+    facts.containerlab ? `${facts.containerlab}${image ? `, run from the image ${image}` : ""}` : "not usable",
+    image
+      ? `It is not installed, and its image ${image} is missing. Install Containerlab (https://containerlab.dev/install/), or rerun the install, which pulls the image:\n${installSteps(target)}`
+      : "Install Containerlab on the lab host (https://containerlab.dev/install/) and make sure this account can run `clab`.");
   add("Lab storage", facts.lab_storage === "ok", facts.lab_storage === "ok" ? "writable" : "missing", installSteps(target));
   add("FRR router image", Boolean(facts.frr_image), facts.frr_image || "not built", installSteps(target));
   add("Linux host image", Boolean(facts.host_image), facts.host_image || "not built", installSteps(target));

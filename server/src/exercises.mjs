@@ -2,7 +2,7 @@
 // creates faults, hands out hints and grades. Fault details are returned to
 // Claude under `tutor_only` and must not be shown to the learner.
 import { remote } from "./remote.mjs";
-import { evaluateHealth } from "./health.mjs";
+import { evaluateHealth, formatChecklist } from "./health.mjs";
 import {
   describeFault, FAULTS, FAULT_TYPES, faultHints, faultTicket, nodesTouched, pick, planFault, rng, runActions,
 } from "./faults.mjs";
@@ -180,7 +180,10 @@ export async function createExercise(lab, topology, state, opts) {
 
   const settleSeconds = Math.max(...faults.map((f) => f.settle_seconds));
   await sleep(settleSeconds * 1000);
-  const after = await evaluateHealth(lab, topology, { extraChecks: faults.flatMap((f) => f.checks) });
+  const extraChecks = faults.flatMap((f) => f.checks);
+  const after = await evaluateHealth(lab, topology, { extraChecks });
+  // Hard gives only the ticket; a fault's own checks (always last) would point at it.
+  const hidden = DIFFICULTIES[difficulty].symptoms === "none" ? extraChecks.length : 0;
 
   const symptoms = symptomsFor(DIFFICULTIES[difficulty].symptoms, after.summary.failed);
   const exercise = {
@@ -200,6 +203,7 @@ export async function createExercise(lab, topology, state, opts) {
         symptoms: symptoms.length,
         checks: after.summary.total,
       }),
+      checks_to_pass: formatChecklist(after.checks.slice(0, after.checks.length - hidden), { results: false, hidden }),
     },
     hints_given: {},
     attempts: [],
@@ -226,7 +230,7 @@ export async function validateExercise(lab, topology, state) {
   const ex = state.exercise;
   if (!ex) throw new Error(`lab ${lab} has no exercise. Create one with create_exercise.`);
   const extraChecks = ex.faults.flatMap((f) => f.checks ?? []);
-  let { summary } = await evaluateHealth(lab, topology, { extraChecks });
+  let { summary, checks } = await evaluateHealth(lab, topology, { extraChecks });
   if (!summary.healthy) {
     // A fix applied seconds ago may still be converging; give it one grace period,
     // and restart BGP sessions that are down so FRR's retry backoff does not count
@@ -234,7 +238,7 @@ export async function validateExercise(lab, topology, state) {
     const down = new Set(summary.failed.filter((c) => c.id.startsWith("bgp:")).map((c) => c.id));
     await kickBgpSessions(lab, topology.bgp_sessions.filter((s) => down.has(`bgp:${s.a}:${s.b_ip}`)));
     await sleep(10_000);
-    ({ summary } = await evaluateHealth(lab, topology, { extraChecks }));
+    ({ summary, checks } = await evaluateHealth(lab, topology, { extraChecks }));
   }
   const now = new Date();
   ex.attempts.push({ at: now.toISOString(), passed: summary.passed, total: summary.total });
@@ -251,13 +255,14 @@ export async function validateExercise(lab, topology, state) {
     status: ex.status,
     solved: summary.healthy,
     score: `${summary.passed}/${summary.total} checks passing`,
+    checklist: formatChecklist(checks),
     failed_checks: summary.failed,
     attempts: ex.attempts.length,
     hints_used: Object.values(ex.hints_given).reduce((a, b) => a + b, 0),
     elapsed_minutes: minutes,
     tutor_note: summary.healthy
       ? "Solved. Debrief: ask the learner to explain the root cause and how they found it, then compare with tutor_only.faults from get_exercise_status."
-      : "Not solved yet. Use failed_checks to steer the learner with questions; do not list them verbatim if that gives the answer away.",
+      : "Not solved yet. The learner sees which checks fail in checklist; failed_checks.detail (the measured state) is for you. Use it to steer them with questions, not to give the answer away.",
   };
 }
 
