@@ -100,6 +100,7 @@ MCP prompts appear as slash commands in Claude Code. Claude Code adds the `mcp__
 | `/mcp__lab-dojo__add_image` | the image you want, in your own words | Tells you how to make an image available: the command to run on the lab host, or why it cannot be done. Claude never adds an image itself. |
 | `/mcp__lab-dojo__build_lab` | what you want, in your own words | Builds and deploys a lab. Claude first asks about anything the description leaves open, shows the plan, and waits for your go-ahead. |
 | `/mcp__lab-dojo__exercise` | a lab name or a lab description, and optionally `easy`, `medium` or `hard` | Runs a troubleshooting exercise with Claude as tutor, on an existing lab or one built the same way as `build_lab`. |
+| `/mcp__lab-dojo__validate` | lab name (optional when one lab is running) | Checks your work: grades the active exercise, or runs the lab's health checks when there is none. Shows every check with ✅ or ❌. |
 | `/mcp__lab-dojo__troubleshoot_lab` | lab name | Claude diagnoses the lab bottom-up and explains what it finds. |
 
 ```text
@@ -107,6 +108,7 @@ MCP prompts appear as slash commands in Claude Code. Claude Code adds the `mcp__
 /mcp__lab-dojo__build_lab "I want to practice STP"
 /mcp__lab-dojo__exercise "eBGP lab with 4 routers, medium"
 /mcp__lab-dojo__exercise "mix easy"
+/mcp__lab-dojo__validate
 ```
 
 Put the request in quotes. Claude Code splits unquoted text on spaces and passes only the first word; the commands tell Claude to read the full text you typed in that case, so a forgotten quote still works in Claude Code.
@@ -217,6 +219,8 @@ Reachability (12/12)
 
 Not solved yet: 37/38
 ```
+
+`snapshot_state` returns the same checklist for any lab, so a lab you configure yourself, without an exercise, can be checked the same way (`/mcp__lab-dojo__validate`).
 
 On `hard` the briefing leaves out the checks a fault adds (they would point at it) and only says how many there are; `validate_exercise` shows them, and shows which checks fail.
 

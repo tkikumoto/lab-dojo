@@ -10,7 +10,7 @@ import {
   getBgpNeighborDetail, getBgpRoutes, getBgpSummary, getInterfaces, getOspfInterfaces, getOspfNeighbors, getRoutes,
   parsePing, parseTraceroute, showText,
 } from "./drivers.mjs";
-import { collectSnapshot, evaluateHealth, summariseSnapshot } from "./health.mjs";
+import { collectSnapshot, evaluateHealth, formatChecklist, summariseSnapshot } from "./health.mjs";
 import { describeFault, FAMILIES, FAULTS, FAULT_TYPES } from "./faults.mjs";
 import {
   createExercise, DIFFICULTIES, exerciseStatus, getHint, injectFault, resetExercise, validateExercise,
@@ -409,14 +409,14 @@ tool(
 
 tool(
   "snapshot_state",
-  "One-call overview of a whole lab: per-node interface states, OSPF neighbors, BGP peers and route counts, plus outcome-based health checks against the design (links up, adjacencies full, sessions established, BGP routes present, loopback-to-loopback pings). Ideal first step when troubleshooting.",
+  "One-call overview of a whole lab: per-node interface states, OSPF neighbors, BGP peers and route counts, plus outcome-based health checks against the design (links up, adjacencies full, sessions established, BGP routes present, loopback-to-loopback pings). Ideal first step when troubleshooting. `health.checklist` lists every check with ✅ or ❌; show it exactly as given, in a code block.",
   { lab, include_health: z.boolean().optional().describe("Run the health checks too (default true; adds a few seconds of pings).") },
   READ_ONLY,
   async ({ lab: labName, include_health: includeHealth = true }) => {
     const { topology } = await context(labName);
     if (!includeHealth) return json({ nodes: summariseSnapshot(topology, await collectSnapshot(labName, topology)) });
-    const { snapshot, summary } = await evaluateHealth(labName, topology);
-    return json({ health: summary, nodes: summariseSnapshot(topology, snapshot) });
+    const { snapshot, summary, checks } = await evaluateHealth(labName, topology);
+    return json({ health: { ...summary, checklist: formatChecklist(checks) }, nodes: summariseSnapshot(topology, snapshot) });
   },
 );
 
@@ -651,6 +651,29 @@ server.registerPrompt(
           "4. When I say I fixed it (or ask you to apply my fix with configure_device), call validate_exercise and show me its checklist exactly as given, in a code block, then the result.",
           "5. If I identify a physical/link-quality fault correctly, 'repair' it with reset_exercise fault_id.",
           "6. After it is solved, debrief: root cause, the fastest diagnostic path, and what to remember.",
+        ].join("\n"),
+      },
+    }],
+  }),
+);
+
+server.registerPrompt(
+  "validate",
+  {
+    description: "Check your work on a lab: grades the active exercise, or runs the lab's health checks when there is none. Shows every check with ✅ or ❌.",
+    argsSchema: { lab: z.string().optional().describe("Lab name. Optional when only one lab is running.") },
+  },
+  ({ lab: labName }) => ({
+    messages: [{
+      role: "user",
+      content: {
+        type: "text",
+        text: [
+          `Validate ${labName ? `lab "${labName}"` : "my lab"} with the lab-dojo tools.`,
+          "1. If I named no lab, call list_labs and use the one with running containers. If several are running, ask me which; if none is, say so and stop.",
+          "2. Call get_exercise_status. If the lab has an active exercise, call validate_exercise. Otherwise call snapshot_state, which runs the lab's health checks.",
+          "3. Show the checklist from the result exactly as given, in a code block, then say in one line whether everything passed.",
+          "4. If everything passed, debrief briefly: why it works and what to remember. If not, do not give the answer away: ask me a question that points at the first failing check, and offer get_hint if there is an exercise. Keep tutor_only to yourself.",
         ].join("\n"),
       },
     }],
