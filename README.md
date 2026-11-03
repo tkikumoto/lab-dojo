@@ -13,10 +13,10 @@ On your own machine:
 
 macOS, Linux and Windows all work. On Windows, use the built-in OpenSSH client (`ssh` in PowerShell or cmd); it cannot share one connection between calls, so multi-router checks are a little slower there.
 
-On the VM (any Linux machine or virtual machine you control):
+On the lab host (a Linux VM or a bare-metal Linux machine you control):
 
 - Docker, usable by your account without `sudo`.
-- [Containerlab](https://containerlab.dev/install/), usable by your account as `clab`.
+- [Containerlab](https://containerlab.dev/install/), either installed and usable by your account as `clab`, or not installed at all. Without it, the install script pulls the official image `ghcr.io/srl-labs/clab`, and the helper runs Containerlab from it as a short-lived container for each command. That container drives the host's Docker, so the lab routers run next to it as ordinary containers, not inside it.
 - `sudo` once, for the install script.
 
 Router images:
@@ -232,7 +232,7 @@ It uses `sudo` for three things only:
 - creating `/var/lib/containerlab-mcp/labs`, owned by your user. Lab definitions, generated configs and lab metadata live there;
 - creating `/etc/containerlab-mcp/images`, owned by root: the list of extra images. An existing list is kept.
 
-Before that it builds the FRR lab image from `remote/frr/` and the Linux host image from `remote/host/`, pulling the public base images if they are missing. The tag and FRR release both come from `FRR_IMAGE` in `clab-mcp-remote`, so that is the one place to change the version.
+Before that it builds the FRR lab image from `remote/frr/` and the Linux host image from `remote/host/`, pulling the public base images if they are missing. The tag and FRR release both come from `FRR_IMAGE` in `clab-mcp-remote`, so that is the one place to change the version. When Containerlab is not installed, it also pulls the Containerlab image named by `CLAB_IMAGE` there.
 
 It does not change SSH, Docker or Containerlab configuration. Rerun it after changing anything under `remote/`, and after pulling a new version of lab-dojo: the helper carries a version number, and `check_setup` reports a helper that is older than the server.
 

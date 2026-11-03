@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Allowlisted Containerlab gateway for the MCP server.
 #
-# The Mac-side MCP server reaches this VM only as
-#   ssh <vm> /usr/local/libexec/clab-mcp-remote <action> [args...]
+# The MCP server reaches this lab host (a VM or a bare-metal Linux machine) only as
+#   ssh <host> /usr/local/libexec/clab-mcp-remote <action> [args...]
 # so this script is the trust boundary. It re-validates every name, address and
 # CLI line even though the Node server validates them first. It never accepts raw
 # Containerlab YAML (it renders topologies itself from a node/link list), never
@@ -15,13 +15,16 @@ export LC_ALL=C
 
 # Raise this whenever an action or its output changes. The MCP server compares
 # it with its own number, so an install that was not rerun is noticed.
-HELPER_VERSION=3
+HELPER_VERSION=4
 STATE_ROOT=/var/lib/containerlab-mcp
 LABS="$STATE_ROOT/labs"
 # Built by install-remote.sh from remote/frr (stock FRR plus lab-start and lab-netdev-sync).
 FRR_IMAGE=lab-dojo/frr:10.7.1
 # Built by install-remote.sh from remote/host: Alpine Linux with network tools.
 HOST_IMAGE=lab-dojo/host:1
+# Containerlab itself, for a host where it is not installed. install-remote.sh
+# pulls it only on such a host; this helper never pulls.
+CLAB_IMAGE=ghcr.io/srl-labs/clab:0.82.0
 # Other images a host node may run: "<name> <image-ref>" per line. Nodes run
 # privileged, so an image is as trusted as root on this VM. Only a person adds
 # one, with clab-mcp-admin; this helper only reads the file, and only when root
@@ -55,6 +58,25 @@ DENY_SUBSTRINGS=(bash shell python sudo /bin/ /usr/ /sbin/)
 die() {
   printf 'clab-mcp-remote: %s\n' "$*" >&2
   exit 2
+}
+
+# Containerlab: the installed program if there is one, else CLAB_IMAGE as a
+# short-lived container. That container drives the host's Docker, so the lab
+# routers are its siblings, not its children. The mounts are the ones the
+# Containerlab docs prescribe. Containerlab passes lab file paths to the host's
+# Docker, so $STATE_ROOT is mounted at the same path.
+clab() {
+  if type -P clab >/dev/null; then
+    command clab "$@"
+    return
+  fi
+  docker run --rm --pull never --privileged --network host --pid host \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v /var/run/netns:/var/run/netns \
+    -v /var/lib/docker/containers:/var/lib/docker/containers \
+    -v /etc/hosts:/etc/hosts \
+    -v "$STATE_ROOT:$STATE_ROOT" -w "$PWD" \
+    "$CLAB_IMAGE" containerlab "$@"
 }
 
 valid_lab_name() { [[ ${1:-} =~ ^[a-z][a-z0-9-]{0,19}$ ]]; }
@@ -375,6 +397,7 @@ doctor() {
   printf 'helper_version=%s\n' "$HELPER_VERSION"
   printf 'docker=%s\n' "$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
   printf 'containerlab=%s\n' "$(clab version 2>/dev/null | sed -n 's/^ *version: *//p' || true)"
+  printf 'containerlab_runs_as=%s\n' "$(type -P clab >/dev/null && printf installed || printf 'container %s' "$CLAB_IMAGE")"
   printf 'lab_storage=%s\n' "$([[ -d $LABS && -w $LABS ]] && printf ok || true)"
   printf 'labs_defined=%s\n' "$(find "$LABS" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null | wc -l)"
   printf 'labs_max=%s\n' "$MAX_LABS"

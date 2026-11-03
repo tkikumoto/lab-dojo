@@ -132,6 +132,11 @@ test("check_setup stops at the first blocking problem and names the fix", () => 
   assert.equal(setupReport("me@vm", { ...facts, ceos_image: "ceos:4.36.2F" }).can_build.length, 3);
   assert.deepEqual(failed(setupReport("me@vm", { ...facts, frr_image: "", containerlab: "", host_image: "" })),
     ["Containerlab", "FRR router image", "Linux host image"]);
+  // Containerlab can run from its image instead of being installed; a missing image points at the install.
+  const clab = (f) => setupReport("me@vm", { ...facts, ...f }).checks.find((c) => c.check === "Containerlab");
+  assert.equal(clab({ containerlab_runs_as: "installed" }).detail, "0.80.0");
+  assert.equal(clab({ containerlab_runs_as: "container ghcr.io/srl-labs/clab:0.82.0" }).detail, "0.80.0, run from the image ghcr.io/srl-labs/clab:0.82.0");
+  assert.match(clab({ containerlab: "", containerlab_runs_as: "container ghcr.io/srl-labs/clab:0.82.0" }).fix, /image ghcr\.io\/srl-labs\/clab:0\.82\.0 is missing[^]*install-remote\.sh/);
   // Extra images come from the root-owned list on the VM; the command to add one is for the user to run.
   assert.deepEqual(ok.extra_images, ["web=nginx:alpine", "dns=coredns/coredns:1.12(missing)"]);
   assert.match(ok.add_image_command, /^sudo .*clab-mcp-admin add-image <name> <image-ref>$/);

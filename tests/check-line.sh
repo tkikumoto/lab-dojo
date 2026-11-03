@@ -87,6 +87,15 @@ log file /etc/frr/daemons
 description a & reboot
 EOF
 
+# clab(): without an installed Containerlab, the pinned image runs, never
+# pulled here, with the lab folder at the same path on both sides.
+got=$(docker() { printf '%s ' "$@"; }; PATH=/nonexistent; clab version)
+for want in "--pull never" "-v $STATE_ROOT:$STATE_ROOT" "$CLAB_IMAGE containerlab version"; do
+  [[ $got == *"$want"* ]] && continue
+  printf 'FAIL clab(): [%s] missing from: %s\n' "$want" "$got"
+  fails=$((fails + 1))
+done
+
 if ((fails)); then
   echo "check_line: $fails case(s) failed"
   exit 1
