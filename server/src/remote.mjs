@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-// user@host of the lab VM. There is no default: every setup has its own.
+// <user>@<address> of the lab host. There is no default: every setup has its own.
 export const sshTarget = process.env.CONTAINERLAB_SSH_TARGET;
 const remoteHelper = process.env.CONTAINERLAB_REMOTE_HELPER ?? "/usr/local/libexec/clab-mcp-remote";
 // Reusing one SSH connection keeps multi-node snapshots fast. The socket path
@@ -38,8 +38,8 @@ function shellQuote(value) {
 }
 
 /**
- * Runs one allowlisted helper action on the VM. No local shell is involved.
- * ssh joins its remote arguments into one string that the VM's login shell
+ * Runs one allowlisted helper action on the lab host. No local shell is involved.
+ * ssh joins its remote arguments into one string that the lab host's login shell
  * re-parses, so every argument is single-quoted to reach the helper as exactly
  * one argv value (e.g. "show ip route"). `input` is written to the helper's
  * stdin.

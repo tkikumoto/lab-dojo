@@ -1,4 +1,4 @@
-// Pure logic only: nothing here reaches the VM.
+// Pure logic only: nothing here reaches the lab host.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -26,7 +26,7 @@ test("addressing plan: loopback 10.255.0.i, link 10.i.j.0/30, lower index gets .
   assert.deepEqual(t.links[3].a, { node: "r1", interface: "eth2", ip: "10.1.4.1" });
 });
 
-test("node names that tools or the VM helper cannot handle are refused", () => {
+test("node names that tools or the lab host's helper cannot handle are refused", () => {
   for (const name of ["all", "loopback", "shell1", "bash-gw", "python3", "sudo"]) {
     assert.throws(() => buildTopology({ name: "x", nodes: [{ name }, { name: "r2" }] }), /reserved/, name);
   }
@@ -111,18 +111,18 @@ test("check_setup stops at the first blocking problem and names the fix", () => 
   ].join("\n"));
   const failed = (r) => r.checks.filter((c) => !c.ok && !c.optional).map((c) => c.check);
 
-  assert.deepEqual(failed(setupReport(undefined)), ["VM address"]);
-  assert.deepEqual(failed(setupReport("me@vm", null, { exitCode: 255, message: "Permission denied" })), ["SSH to the VM"]);
-  assert.deepEqual(failed(setupReport("me@vm", null, { message: "timed out" })), ["SSH to the VM"]);
+  assert.deepEqual(failed(setupReport(undefined)), ["Lab host address"]);
+  assert.deepEqual(failed(setupReport("me@vm", null, { exitCode: 255, message: "Permission denied" })), ["SSH to the lab host"]);
+  assert.deepEqual(failed(setupReport("me@vm", null, { message: "timed out" })), ["SSH to the lab host"]);
 
   const missing = setupReport("me@vm", null, { exitCode: 127, message: "No such file" });
-  assert.deepEqual(failed(missing), ["Helper on the VM"]);
+  assert.deepEqual(failed(missing), ["Helper on the lab host"]);
   assert.match(missing.checks.at(-1).fix, /scp -r remote\/\. me@vm:.*\n.*install-remote\.sh/);
   // A helper from before the doctor action refuses it; a newer one reports its own number.
   assert.match(setupReport("me@vm", null, { exitCode: 2, refused: true }).checks.at(-1).detail, /an older version is installed/);
   assert.equal(setupReport("me@vm", { ...facts, helper_version: "1" }).ready, false);
 
-  // cEOS is optional: without it the VM is ready, and the report says what that rules out.
+  // cEOS is optional: without it the lab host is ready, and the report says what that rules out.
   const ok = setupReport("me@vm", facts);
   assert.equal(ok.ready, true);
   assert.deepEqual(failed(ok), []);
@@ -137,7 +137,7 @@ test("check_setup stops at the first blocking problem and names the fix", () => 
   assert.equal(clab({ containerlab_runs_as: "installed" }).detail, "0.80.0");
   assert.equal(clab({ containerlab_runs_as: "container ghcr.io/srl-labs/clab:0.82.0" }).detail, "0.80.0, run from the image ghcr.io/srl-labs/clab:0.82.0");
   assert.match(clab({ containerlab: "", containerlab_runs_as: "container ghcr.io/srl-labs/clab:0.82.0" }).fix, /image ghcr\.io\/srl-labs\/clab:0\.82\.0 is missing[^]*install-remote\.sh/);
-  // Extra images come from the root-owned list on the VM; the command to add one is for the user to run.
+  // Extra images come from the root-owned list on the lab host; the command to add one is for the user to run.
   assert.deepEqual(ok.extra_images, ["web=nginx:alpine", "dns=coredns/coredns:1.12(missing)"]);
   assert.match(ok.add_image_command, /^sudo .*clab-mcp-admin add-image <name> <image-ref>$/);
 });
@@ -170,7 +170,7 @@ test("a host is a Linux machine, not a router", () => {
   assert.equal(describeTopology(t).links[1], "r1 eth2 10.1.3.1  <->  host1 eth1   (10.1.3.0/30)");
   assert.deepEqual(t.bgp_sessions.map((s) => `${s.a}-${s.b}`), ["r1-r2"]);
 
-  // What reaches the VM helper, and how a person opens each node.
+  // What reaches the lab host's helper, and how a person opens each node.
   assert.match(helperSpec(t), /^node host1 host$/m);
   assert.match(helperSpec(t), /^node web1 host web$/m);
   assert.match(cliCommand(t, host1), / bash$/);

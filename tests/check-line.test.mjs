@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// The filter is bash, run on the Linux VM. Windows has no bash of its own
+// The filter is bash, run on the Linux lab host. Windows has no bash of its own
 // (`bash` there may be WSL, which cannot read this path), so it is skipped.
 const skip = process.platform === "win32" && "needs bash; run npm test on Linux or macOS";
 

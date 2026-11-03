@@ -1,15 +1,15 @@
 # Lab Dojo
 
-An MCP server that lets Claude build, inspect and break network labs on a Containerlab VM, and run guided troubleshooting exercises with Claude as the tutor. Routers are FRR (`lab-dojo/frr:10.7.1`, the stock `quay.io/frrouting/frr:10.7.1` plus the [lab additions](#frr-lab-image) below) and, optionally, Arista cEOS. Labs can also hold Linux hosts. A single lab can mix all three.
+An MCP server that lets Claude build, inspect and break network labs on a Containerlab host, and run guided troubleshooting exercises with Claude as the tutor. Routers are FRR (`lab-dojo/frr:10.7.1`, the stock `quay.io/frrouting/frr:10.7.1` plus the [lab additions](#frr-lab-image) below) and, optionally, Arista cEOS. Labs can also hold Linux hosts. A single lab can mix all three.
 
-Your MCP client (for example Claude Code) launches the local Node server (`server/src/index.mjs`). The server reaches a Linux VM over SSH and calls one allowlisted helper there: `/usr/local/libexec/clab-mcp-remote`.
+Your MCP client (for example Claude Code) launches the local Node server (`server/src/index.mjs`). The server reaches a Linux lab host (a VM or a bare-metal machine) over SSH and calls one allowlisted helper there: `/usr/local/libexec/clab-mcp-remote`.
 
 ## Requirements
 
 On your own machine:
 
 - Node.js 22 or newer, and an MCP client such as Claude Code.
-- SSH access to the VM with a key, so `ssh <user>@<vm> true` works without a password prompt.
+- SSH access to the lab host with a key, so `ssh <user>@<host> true` works without a password prompt.
 
 macOS, Linux and Windows all work. On Windows, use the built-in OpenSSH client (`ssh` in PowerShell or cmd); it cannot share one connection between calls, so multi-router checks are a little slower there.
 
@@ -25,34 +25,34 @@ Router images:
 |---|---|---|
 | FRR lab image | Yes | The install script builds it from the public FRR image. |
 | Linux host image | Yes | The install script builds it from public Alpine Linux. |
-| Arista cEOS | No | Arista images need a sign-in, so you import one yourself: download cEOS-lab from arista.com, copy it to the VM and run `docker import cEOS64-lab-<version>.tar.xz ceos:<version>`. Any version works; the newest one present is used. |
+| Arista cEOS | No | Arista images need a sign-in, so you import one yourself: download cEOS-lab from arista.com, copy it to the lab host and run `docker import cEOS64-lab-<version>.tar.xz ceos:<version>`. Any version works; the newest one present is used. |
 
 Without cEOS you can build every FRR lab and run every exercise. Arista nodes and layer 2 labs need it. Other public Linux images can be added later; see [Hosts and extra images](#hosts-and-extra-images).
 
 ## Setup
 
-1. **Install the helper on the VM.** From this folder:
+1. **Install the helper on the lab host.** From this folder:
 
    ```bash
-   scp -r remote/. <user>@<vm>:/tmp/containerlab-mcp-remote
-   ssh <user>@<vm> "cd /tmp/containerlab-mcp-remote && bash ./install-remote.sh"
+   scp -r remote/. <user>@<host>:/tmp/containerlab-mcp-remote
+   ssh <user>@<host> "cd /tmp/containerlab-mcp-remote && bash ./install-remote.sh"
    ```
 
 2. **Register the server with your MCP client.** For Claude Code:
 
    ```bash
-   claude mcp add lab-dojo --env CONTAINERLAB_SSH_TARGET=<user>@<vm> -- node /absolute/path/to/lab-dojo/server/src/index.mjs
+   claude mcp add lab-dojo --env CONTAINERLAB_SSH_TARGET=<user>@<host> -- node /absolute/path/to/lab-dojo/server/src/index.mjs
    ```
 
    On Windows, write the path with forward slashes, e.g. `C:/Users/me/lab-dojo/server/src/index.mjs`.
 
-   Or copy `.mcp.example.json` to `.mcp.json` in this folder and fill in the two values. `.mcp.json` is not tracked, so your own path and VM name stay local.
+   Or copy `.mcp.example.json` to `.mcp.json` in this folder and fill in the two values. `.mcp.json` is not tracked, so your own path and lab host name stay local.
 
-3. **Run the first-time check.** In Claude Code: `/mcp__lab-dojo__init`. It checks SSH, the helper and its version, Docker, Containerlab, lab storage and the images, and gives you the exact command for anything that is missing. It installs nothing itself. Run it again after an upgrade: it tells you when the helper on the VM is older than the server.
+3. **Run the first-time check.** In Claude Code: `/mcp__lab-dojo__init`. It checks SSH, the helper and its version, Docker, Containerlab, lab storage and the images, and gives you the exact command for anything that is missing. It installs nothing itself. Run it again after an upgrade: it tells you when the helper on the lab host is older than the server.
 
 ## Security model
 
-The VM helper is the trust boundary. It re-validates every request, even though the Node server validates first. Containerlab runs nodes as **privileged** containers, so a shell inside a router is a shell on the VM. The design therefore never lets a request reach a shell:
+The helper on the lab host is the trust boundary. It re-validates every request, even though the Node server validates first. Containerlab runs nodes as **privileged** containers, so a shell inside a router is a shell on the lab host. The design therefore never lets a request reach a shell:
 
 - **No raw Containerlab YAML.** `create_topology` takes a template or a node/link list. The helper renders the YAML itself with fixed images and fixed bind mounts, so there are no host paths, `exec:` hooks or host networking.
 - **FRR's `daemons` file is generated, never accepted.** FRR's init script sources it as shell.
@@ -60,8 +60,8 @@ The VM helper is the trust boundary. It re-validates every request, even though 
 - **`configure_device` lines are screened by first word, abbreviations included.** Both CLIs accept abbreviations, so `ev` (for `event-handler`), `st`, `en` and `wr` are refused too. Refused words: `do`, `end`, `exit`, `start-shell`, `write`, `copy`, `bash`, `event-handler`, `alias`, `schedule`, `daemon`, `extension`, `python…` and similar. Lines containing `bash`, `shell`, `python` or `/bin/`, any `|`, `>`, `<`, `&`, backtick, `;` or `$(`, and any file path (an argument that starts with `/`) are also refused.
 - **Strict argument validation.** Names, interfaces (`eth1+`; `eth0` is management), IP literals and numeric ranges are all validated, so option injection such as `ping -f` is impossible.
 - **The FRR device watcher stays inside the node.** It creates devices only in that router's own network namespace, from interface names it validates, never through a shell and never on the management interface `eth0`.
-- **Fixed images.** A node runs the FRR image, a cEOS image, the built-in Linux host, or an image on a list that root owns on the VM. Nodes are privileged, so an image is as trusted as root there. The helper cannot write that list and never pulls an image; only a person adds one, with `sudo clab-mcp-admin`.
-- **Resource caps.** At most 16 nodes per lab, 6 cEOS per lab, 8 cEOS running on the VM, and 6 lab definitions.
+- **Fixed images.** A node runs the FRR image, a cEOS image, the built-in Linux host, or an image on a list that root owns on the lab host. Nodes are privileged, so an image is as trusted as root there. The helper cannot write that list and never pulls an image; only a person adds one, with `sudo clab-mcp-admin`.
+- **Resource caps.** At most 16 nodes per lab, 6 cEOS per lab, 8 cEOS running on the lab host, and 6 lab definitions.
 
 Tool annotations mark read-only tools (`readOnlyHint`) and destructive ones (`destroy_topology`, `reset_exercise`). You can auto-approve the read-only tools and keep prompts for the rest.
 
@@ -69,7 +69,7 @@ Tool annotations mark read-only tools (`readOnlyHint`) and destructive ones (`de
 
 | Layer | Tool | Purpose |
 |---|---|---|
-| Setup | `check_setup` | Is the VM ready, which images are present, and the command to run for anything missing |
+| Setup | `check_setup` | Is the lab host ready, which images are present, and the command to run for anything missing |
 | 1 Lab | `list_labs` | Lab definitions and running container counts |
 | | `create_topology` | Template (`line`, `ring`, `full-mesh`, `star`, `leaf-spine`) or explicit nodes/links; routing `ospf`, `ebgp`, `ibgp-ospf`, `none` (addresses only) or `bare` (cabling only); node kinds `frr`, `ceos` and `host`, mixed freely |
 | | `deploy_topology` | Deploy and wait until every router has loaded its config; returns the access details below |
@@ -96,8 +96,8 @@ MCP prompts appear as slash commands in Claude Code. Claude Code adds the `mcp__
 
 | Command | Argument | What it does |
 |---|---|---|
-| `/mcp__lab-dojo__init` | none | First-time check of the VM and its images; gives the command for anything missing. |
-| `/mcp__lab-dojo__add_image` | the image you want, in your own words | Tells you how to make an image available: the command to run on the VM, or why it cannot be done. Claude never adds an image itself. |
+| `/mcp__lab-dojo__init` | none | First-time check of the lab host and its images; gives the command for anything missing. |
+| `/mcp__lab-dojo__add_image` | the image you want, in your own words | Tells you how to make an image available: the command to run on the lab host, or why it cannot be done. Claude never adds an image itself. |
 | `/mcp__lab-dojo__build_lab` | what you want, in your own words | Builds and deploys a lab. Claude first asks about anything the description leaves open, shows the plan, and waits for your go-ahead. |
 | `/mcp__lab-dojo__exercise` | a lab name or a lab description, and optionally `easy`, `medium` or `hard` | Runs a troubleshooting exercise with Claude as tutor, on an existing lab or one built the same way as `build_lab`. |
 | `/mcp__lab-dojo__troubleshoot_lab` | lab name | Claude diagnoses the lab bottom-up and explains what it finds. |
@@ -111,17 +111,17 @@ MCP prompts appear as slash commands in Claude Code. Claude Code adds the `mcp__
 
 Put the request in quotes. Claude Code splits unquoted text on spaces and passes only the first word; the commands tell Claude to read the full text you typed in that case, so a forgotten quote still works in Claude Code.
 
-Nothing is assumed to be running: every flow starts by listing the labs on the VM. The same rules apply when you ask in plain words without a slash command.
+Nothing is assumed to be running: every flow starts by listing the labs on the lab host. The same rules apply when you ask in plain words without a slash command.
 
 ### Access details
 
 Every deploy (`deploy_topology`, or `create_topology` with `deploy: true`) returns an `access` section, and Claude is instructed to show it to you as a table. For each node it gives:
 
 - the management IP;
-- the command that opens its CLI on the VM, e.g. `docker exec -it clab-ring4-r1 vtysh` for FRR or `docker exec -it clab-ring4-r3 Cli` for cEOS (a cEOS node also takes SSH on its management IP, with Containerlab's default login `admin` / `admin`);
+- the command that opens its CLI on the lab host, e.g. `docker exec -it clab-ring4-r1 vtysh` for FRR or `docker exec -it clab-ring4-r3 Cli` for cEOS (a cEOS node also takes SSH on its management IP, with Containerlab's default login `admin` / `admin`);
 - each link interface and the neighbour interface it connects to, e.g. `eth2 -> r3 Ethernet1`.
 
-Run the commands on the VM, after `ssh <user>@<vm>`. `list_nodes` returns the same details at any time.
+Run the commands on the lab host, after `ssh <user>@<host>`. `list_nodes` returns the same details at any time.
 
 ### Hosts and extra images
 
@@ -132,7 +132,7 @@ A `host` node is a Linux machine: Alpine with `bash`, `ip`, `ping`, `traceroute`
 - Router tools (`exec_cli`, `configure_device`, `get_routes` and so on) refuse a host. `ping` and `traceroute` from a host work.
 - Health checks expect nothing of a host: no adjacency, no ping. A link to a host is judged from the router's end. Faults never land on a host or on a link towards one.
 
-A host node can run another image instead, by name. Register a public image on the VM first:
+A host node can run another image instead, by name. Register a public image on the lab host first:
 
 ```bash
 sudo /usr/local/libexec/clab-mcp-admin add-image web nginx:alpine   # pulls it and registers it as "web"
@@ -142,7 +142,7 @@ sudo /usr/local/libexec/clab-mcp-admin remove-image web
 
 Then a node `{ "name": "web1", "kind": "host", "image": "web" }` runs it. `check_setup` lists the registered images. The image must keep running by itself, and it needs `ping` and `traceroute` for those two tools to work from it.
 
-When a lab needs an image the VM does not have, Claude does not add it. It tells you which case applies:
+When a lab needs an image the lab host does not have, Claude does not add it. It tells you which case applies:
 
 | What is missing | What happens |
 |---|---|
@@ -152,13 +152,13 @@ When a lab needs an image the VM does not have, Claude does not add it. It tells
 
 ### FRR lab image
 
-FRR configures interfaces but never creates them, and a container's kernel defaults are not a router's. FRR nodes therefore run `lab-dojo/frr:10.7.1`, built on the VM from `remote/frr/`, which adds:
+FRR configures interfaces but never creates them, and a container's kernel defaults are not a router's. FRR nodes therefore run `lab-dojo/frr:10.7.1`, built on the lab host from `remote/frr/`, which adds:
 
 - **A device watcher** (`lab-netdev-sync`). Every two seconds it reads the running configuration and creates the Linux devices it implies, so these need only FRR configuration:
   - `vrrp <vrid> ip <address>` or `vrrp <vrid> ipv6 <address>`: a macvlan on that interface with the VRRP virtual MAC and the virtual address. Without it `show vrrp` stays at `Initialize`. The address brings no subnet route, so a Master still sends its own traffic from its real address.
   - `interface <parent>.<vid>`, e.g. `eth2.10`: an 802.1Q subinterface, for router-on-a-stick.
   - `interface loopback<N>` or `dummy<N>`: a dummy interface.
-- **Kernel settings** (`lab-start`): IPv6 forwarding on; `arp_ignore=1` and `arp_announce=2`, so a VRRP virtual IP resolves to the virtual MAC and not to each router's own MAC; `ignore_routes_with_linkdown=1`, so a VRRP backup does not route through its held-down virtual interface. It also removes the management network's default route: that route would outrank any default route the router learns and carry lab traffic out of the lab. The VM still reaches the node on the management subnet.
+- **Kernel settings** (`lab-start`): IPv6 forwarding on; `arp_ignore=1` and `arp_announce=2`, so a VRRP virtual IP resolves to the virtual MAC and not to each router's own MAC; `ignore_routes_with_linkdown=1`, so a VRRP backup does not route through its held-down virtual interface. It also removes the management network's default route: that route would outrank any default route the router learns and carry lab traffic out of the lab. The lab host still reaches the node on the management subnet.
 - **More daemons**: OSPFv2, OSPFv3, BGP, IS-IS, RIP, BFD, VRRP and static routing all run.
 - **Tools**: `tcpdump` and `mtr`.
 
@@ -240,8 +240,8 @@ It does not change SSH, Docker or Containerlab configuration. Rerun it after cha
 
 | Variable | Meaning |
 |---|---|
-| `CONTAINERLAB_SSH_TARGET` | `<user>@<vm>` of the lab VM. Required. |
-| `CONTAINERLAB_REMOTE_HELPER` | Path of the helper on the VM. Default `/usr/local/libexec/clab-mcp-remote`. |
+| `CONTAINERLAB_SSH_TARGET` | `<user>@<host>` of the lab host. Required. |
+| `CONTAINERLAB_REMOTE_HELPER` | Path of the helper on the lab host. Default `/usr/local/libexec/clab-mcp-remote`. |
 | `CONTAINERLAB_SSH_CONTROL_PATH` | Where SSH keeps its shared connection. Default `~/.ssh/cm-clab-mcp-*`. Not used on Windows, which has no connection sharing. |
 
 After changing server code, reconnect the server in your client (in Claude Code: `/mcp`) so it loads the new code.
@@ -266,7 +266,7 @@ npm test        # topology, fault targeting and ping parsing, then the helper's 
 
 `npm run check` needs bash and python3, so run it on macOS or Linux. On Windows `npm test` skips the filter test.
 
-The filter test (`tests/check-line.sh`) needs bash 4 or newer. macOS ships bash 3.2, so there it reruns itself on the VM over SSH: set `CONTAINERLAB_SSH_TARGET` in your shell first. The VM must see this folder at the same path (OrbStack machines do); otherwise run the test on Linux. It reads the helper from this folder, so it tests your working copy and not the installed helper.
+The filter test (`tests/check-line.sh`) needs bash 4 or newer. macOS ships bash 3.2, so there it reruns itself on the lab host over SSH: set `CONTAINERLAB_SSH_TARGET` in your shell first. The lab host must see this folder at the same path (OrbStack machines do); otherwise run the test on Linux. It reads the helper from this folder, so it tests your working copy and not the installed helper.
 
 `npm start` waits for MCP JSON-RPC on stdin; this is expected.
 
