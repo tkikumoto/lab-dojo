@@ -11,6 +11,16 @@ STATE_ROOT=/var/lib/containerlab-mcp
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 OWNER="$(id -un)"
 
+# A fresh lab host may have no Docker: install it with Docker's own script
+# (Debian, Ubuntu, Fedora, RHEL family), then give this account access. The new
+# group only applies to a new login, so rerun this script once under `sg docker`.
+type -P docker >/dev/null || curl -fsSL https://get.docker.com | sudo sh
+if ! docker info >/dev/null 2>&1; then
+  [[ -z ${LAB_DOJO_REGROUPED:-} ]] || { echo "Docker is installed but $OWNER still cannot use it. Is it running? sudo systemctl status docker" >&2; exit 1; }
+  sudo usermod -aG docker "$OWNER"
+  exec sg docker -c "LAB_DOJO_REGROUPED=1 bash $(printf %q "$SCRIPT_DIR/install-remote.sh")"
+fi
+
 # The helper names the FRR image it deploys. Build exactly that one, on the
 # matching FRR release, before the helper that depends on it is installed.
 FRR_IMAGE="$(sed -n 's/^FRR_IMAGE=//p' "$SCRIPT_DIR/clab-mcp-remote")"

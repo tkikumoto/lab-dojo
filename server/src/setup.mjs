@@ -79,7 +79,7 @@ export function setupReport(target, facts, failure) {
   add("Helper on the lab host", true, version);
 
   add("Docker", Boolean(facts.docker), facts.docker || "not usable",
-    "Your account on the lab host must be able to run `docker` without sudo.");
+    `Your account on the lab host must be able to run \`docker\` without sudo. The install sets that up, installing Docker if it is missing:\n${installSteps(target)}`);
   // Containerlab is either installed, or run from its image as a container next to the labs.
   const image = facts.containerlab_runs_as?.match(/^container (.+)/)?.[1];
   add("Containerlab", Boolean(facts.containerlab),

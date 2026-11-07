@@ -34,7 +34,7 @@ What this does not cover:
 
 ## What the install script does
 
-It uses `sudo` for three things only:
+Apart from setting up Docker (below), it uses `sudo` for three things only:
 
 - installing the helper, the admin script and the SSH wrapper (`clab-mcp-ssh`) under `/usr/local/libexec`;
 - creating `/var/lib/containerlab-mcp/labs`, owned by your user. Lab definitions, generated configs and lab metadata live there;
@@ -42,4 +42,4 @@ It uses `sudo` for three things only:
 
 Before that it builds the FRR lab image from `remote/frr/` and the Linux host image from `remote/host/`, pulling the public base images if they are missing. The tag and FRR release both come from `FRR_IMAGE` in `clab-mcp-remote`, so that is the one place to change the version. When Containerlab is not installed, it also pulls the Containerlab image named by `CLAB_IMAGE` there.
 
-It does not change SSH, Docker or Containerlab configuration. Rerun it after changing anything under `remote/`, and after pulling a new version of lab-dojo: the helper carries a version number, and `check_setup` reports a helper that is older than the server.
+First, when `docker` is missing, it runs Docker's install script from https://get.docker.com as root, and when your account cannot use Docker, it adds the account to the `docker` group. Otherwise it does not change SSH, Docker or Containerlab configuration. Rerun it after changing anything under `remote/`, and after pulling a new version of lab-dojo: the helper carries a version number, and `check_setup` reports a helper that is older than the server.
