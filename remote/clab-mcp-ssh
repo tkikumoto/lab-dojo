@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Forced command for lab-dojo's own SSH key on the lab host. In ~/.ssh/authorized_keys:
+#
+#   command="/usr/local/libexec/clab-mcp-ssh",restrict ssh-ed25519 AAAA... lab-dojo
+#
+# sshd then runs this script for every connection made with that key, whatever
+# command the client asked for, and puts the request in SSH_ORIGINAL_COMMAND. The
+# only request it passes on is the one the MCP server sends: the helper's path and
+# its arguments, each single-quoted ('\'' for a quote inside one). It splits that
+# without a shell and runs the helper, which applies its own allowlist. So the key
+# opens no shell, and nothing that holds it can run anything but the helper.
+# Keep it bash 3.2 compatible: the tests source it on macOS.
+set -euo pipefail
+
+HELPER=/usr/local/libexec/clab-mcp-remote
+
+refuse() {
+  # The helper's prefix and exit code, so the server reports a refusal.
+  printf 'clab-mcp-remote: %s\n' "$*" >&2
+  exit 2
+}
+
+# Splits $1, a run of single-quoted words separated by single spaces, into WORDS.
+# Fails on anything else: unquoted text, a shell character outside quotes, an
+# unterminated quote.
+split_quoted() {
+  local s=$1 word
+  WORDS=()
+  while [[ -n $s ]]; do
+    [[ $s == "'"* ]] || return 1
+    word=''
+    while :; do
+      s=${s#\'}
+      [[ $s == *"'"* ]] || return 1
+      word+=${s%%\'*}
+      s=${s#*\'}
+      # '\'' is an escaped quote; the word continues after it.
+      [[ $s == "\\''"* ]] || break
+      word+="'"
+      s=${s#\\\'}
+    done
+    WORDS+=("$word")
+    [[ -n $s ]] || break
+    [[ $s == ' '* ]] || return 1
+    s=${s# }
+  done
+}
+
+# Sets WORDS to the helper's arguments, or fails.
+parse_request() {
+  split_quoted "$1" && ((${#WORDS[@]} >= 2)) && [[ ${WORDS[0]} == "$HELPER" ]] || return 1
+  WORDS=("${WORDS[@]:1}")
+}
+
+# Sourced (by the tests): define the functions, run nothing.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
+
+parse_request "${SSH_ORIGINAL_COMMAND:-}" || refuse 'this SSH key only runs the lab-dojo helper'
+exec "$HELPER" "${WORDS[@]}"

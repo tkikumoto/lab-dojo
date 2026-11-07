@@ -15,7 +15,7 @@ export LC_ALL=C
 
 # Raise this whenever an action or its output changes. The MCP server compares
 # it with its own number, so an install that was not rerun is noticed.
-HELPER_VERSION=5
+HELPER_VERSION=6
 STATE_ROOT=/var/lib/containerlab-mcp
 LABS="$STATE_ROOT/labs"
 # Built by install-remote.sh from remote/frr (stock FRR plus lab-start and lab-netdev-sync).
@@ -503,6 +503,9 @@ inspect_lab() {
 # value means missing. Read-only.
 doctor() {
   printf 'helper_version=%s\n' "$HELPER_VERSION"
+  # sshd sets SSH_ORIGINAL_COMMAND only for a key with a forced command (clab-mcp-ssh).
+  printf 'ssh_access=%s\n' "$([[ -n ${SSH_ORIGINAL_COMMAND:-} ]] && printf restricted || printf full)"
+  printf 'orbstack=%s\n' "$([[ $(uname -r) == *orbstack* ]] && printf yes || printf no)"
   printf 'docker=%s\n' "$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
   printf 'containerlab=%s\n' "$(clab version 2>/dev/null | sed -n 's/^ *version: *//p' || true)"
   printf 'containerlab_runs_as=%s\n' "$(type -P clab >/dev/null && printf installed || printf 'container %s' "$CLAB_IMAGE")"

@@ -35,6 +35,8 @@ fi
 sudo install -d -m 0755 /usr/local/libexec
 sudo install -m 0755 "$SCRIPT_DIR/clab-mcp-remote" /usr/local/libexec/clab-mcp-remote
 sudo install -m 0755 "$SCRIPT_DIR/clab-mcp-admin" /usr/local/libexec/clab-mcp-admin
+# Forced command for a lab-dojo-only SSH key; root-owned, so that key cannot change it.
+sudo install -m 0755 "$SCRIPT_DIR/clab-mcp-ssh" /usr/local/libexec/clab-mcp-ssh
 sudo install -d -m 0755 -o "$OWNER" -g "$(id -gn)" "$STATE_ROOT" "$STATE_ROOT/labs"
 sudo install -d -m 0755 /etc/containerlab-mcp
 [[ -e /etc/containerlab-mcp/images ]] || sudo install -m 0644 /dev/null /etc/containerlab-mcp/images
@@ -42,5 +44,6 @@ sudo install -d -m 0755 /etc/containerlab-mcp
 echo "Installed allowlisted Containerlab MCP helper at /usr/local/libexec/clab-mcp-remote"
 echo "Built FRR lab image $FRR_IMAGE and host image $HOST_IMAGE"
 echo "$CLAB_NOTE"
+echo "Recommended: give lab-dojo its own SSH key that can only run the helper. check_setup (/mcp__<server>__init) shows the steps."
 echo "Extra images: sudo /usr/local/libexec/clab-mcp-admin add-image <name> <image-ref>"
 echo "Lab definitions live in $STATE_ROOT/labs (owner: $OWNER)"

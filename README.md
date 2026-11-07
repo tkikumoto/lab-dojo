@@ -52,6 +52,8 @@ Claude Code -> lab-dojo server  --SSH-->    helper -> Docker + Containerlab -> l
 
 3. **Run `/mcp__lab-dojo__init` again.** When every check passes, you are ready.
 
+4. **Recommended: give lab-dojo its own SSH key** that can only run the helper. `init` shows the steps under "Restricted SSH key". Without it, lab-dojo's key, which is your own, opens a full shell on the lab host, and so does Claude's Bash tool. See [Security](docs/security.md#a-key-that-can-only-run-the-helper).
+
 `init` only checks; it never installs anything itself. It tells you when SSH or Docker is the problem, but you fix those yourself. After you update lab-dojo, reconnect the server (`/mcp` in Claude Code) and run `init` again: it tells you when the lab host needs the install again.
 
 ## Commands

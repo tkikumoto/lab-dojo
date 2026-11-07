@@ -33,7 +33,7 @@ async function withSlot(fn) {
 }
 
 /** Single-quotes a value for a POSIX shell. */
-function shellQuote(value) {
+export function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 

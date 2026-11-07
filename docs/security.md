@@ -14,11 +14,29 @@ The helper on the lab host is the trust boundary. It re-validates every request,
 
 Tool annotations mark read-only tools (`readOnlyHint`) and destructive ones (`destroy_topology`, `reset_exercise`). You can auto-approve the read-only tools and keep prompts for the rest.
 
+## A key that can only run the helper
+
+The helper limits what lab-dojo's *tools* can do. The SSH key behind them is a separate question: if it is your own key, it opens a full shell on the lab host, and anything that can use it gets that shell, including Claude's own Bash tool. A non-sudo account does not fix this: lab-dojo needs Docker, and the `docker` group is root on the lab host.
+
+So give lab-dojo a key of its own, locked in `~/.ssh/authorized_keys` on the lab host:
+
+```text
+command="/usr/local/libexec/clab-mcp-ssh",restrict ssh-ed25519 AAAA... lab-dojo
+```
+
+sshd then runs `clab-mcp-ssh` for every connection with that key, whatever was asked, and `restrict` turns off port, agent and X11 forwarding and terminals. `clab-mcp-ssh` accepts only the request the server sends (the helper's path and single-quoted arguments), splits it without a shell and runs the helper; anything else is refused. It is installed root-owned, so the key cannot change it. `check_setup` reports whether the server came in through such a key and prints the steps when it did not.
+
+What this does not cover:
+
+- **Your own key.** Claude's Bash tool runs as you, so it can use your personal key too. Make that key ask before each use (an SSH agent with Touch ID per use, such as Secretive or 1Password), or deny `ssh` and `scp` to Claude's Bash in Claude Code's settings.
+- **OrbStack.** OrbStack gives your Mac user root on its machines through its own `orb` command and SSH, with no key involved, so no key can limit it. Treat an OrbStack lab host as disposable; if it breaks, recreate the machine.
+- **The switch-over.** The server reuses one SSH connection for up to two minutes. Reconnect the server after changing `CONTAINERLAB_SSH_TARGET`, and wait two minutes or run `ssh -O exit -o ControlPath=~/.ssh/cm-clab-mcp-%C <old target>` to close the old connection.
+
 ## What the install script does
 
 It uses `sudo` for three things only:
 
-- installing the helper and the admin script under `/usr/local/libexec`;
+- installing the helper, the admin script and the SSH wrapper (`clab-mcp-ssh`) under `/usr/local/libexec`;
 - creating `/var/lib/containerlab-mcp/labs`, owned by your user. Lab definitions, generated configs and lab metadata live there;
 - creating `/etc/containerlab-mcp/images`, owned by root: the list of extra images. An existing list is kept.
 
