@@ -3,12 +3,13 @@
 import { remote, RemoteRefusal, sshTarget } from "./remote.mjs";
 
 /** Must equal HELPER_VERSION in remote/clab-mcp-remote. */
-export const HELPER_VERSION = 7;
+export const HELPER_VERSION = 8;
 
-const installSteps = (target) => [
+// `folder` (optional) is where labs live on the lab host; the install moves existing labs there.
+const installSteps = (target, folder) => [
   "Run from the lab-dojo folder:",
   `scp -r remote/. ${target}:/tmp/containerlab-mcp-remote`,
-  `ssh ${target} "cd /tmp/containerlab-mcp-remote && bash ./install-remote.sh"`,
+  `ssh ${target} "cd /tmp/containerlab-mcp-remote && bash ./install-remote.sh${folder ? ` ${folder}` : ""}"`,
 ].join("\n");
 
 const CEOS_STEPS = "Arista images need a sign-in, so no command can pull one. Download cEOS-lab from arista.com, "
@@ -87,7 +88,7 @@ export function setupReport(target, facts, failure) {
     image
       ? `It is not installed, and its image ${image} is missing. Install Containerlab (https://containerlab.dev/install/), or rerun the install, which pulls the image:\n${installSteps(target)}`
       : "Install Containerlab on the lab host (https://containerlab.dev/install/) and make sure this account can run `clab`.");
-  add("Lab storage", facts.lab_storage === "ok", facts.lab_storage === "ok" ? "writable" : "missing", installSteps(target));
+  add("Lab storage", facts.lab_storage === "ok", facts.lab_storage === "ok" ? `${facts.labs_dir}, writable` : "missing", installSteps(target));
   add("FRR router image", Boolean(facts.frr_image), facts.frr_image || "not built", installSteps(target));
   add("Linux host image", Boolean(facts.host_image), facts.host_image || "not built", installSteps(target));
   const restricted = facts.ssh_access === "restricted";
@@ -115,6 +116,8 @@ export function setupReport(target, facts, failure) {
   return report({
     memory_available_mb: Number(facts.memory_available_mb),
     labs_defined: `${facts.labs_defined} of ${facts.labs_max}`,
+    labs_dir: facts.labs_dir,
+    labs_dir_command: installSteps(target, "<folder>"),
     can_build: ready
       ? [
         "routed labs and exercises with FRR routers",

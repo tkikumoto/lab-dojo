@@ -604,6 +604,8 @@ server.registerPrompt(
           "Check that lab-dojo is ready to use.",
           "1. Call check_setup and show the result as a table: check, result.",
           "2. For every failed check, show its `fix` in a code block for me to run. Do not run installs or change the lab host yourself. After I say I ran them, call check_setup again.",
+          "   Before showing a fix that runs install-remote.sh, ask me which folder on the lab host should hold my labs (topologies, configs, exercise state), suggesting ~/labs, the default. Put my answer at the end of the install command, e.g. `bash ./install-remote.sh ~/labs`. The install creates the folder; it must be new or empty, and existing labs move there, which it refuses while any of them is deployed.",
+          "   When check_setup passes, say where my labs live (labs_dir) and that labs_dir_command moves them to another folder.",
           "3. Say plainly what I can build now and what is not available (from can_build and not_available), with the memory left on the lab host.",
           "4. If everything required passes, suggest a first command, e.g. /mcp__<server>__build_lab \"3 routers in a ring with OSPF\", with <server> replaced by the server name this init command ran under (lab-dojo unless I registered it under another name).",
         ].join("\n"),

@@ -154,8 +154,8 @@ EOF
 
 # clab(): without an installed Containerlab, the pinned image runs, never
 # pulled here, with the lab folder at the same path on both sides.
-got=$(docker() { printf '%s ' "$@"; }; PATH=/nonexistent; clab version)
-for want in "--pull never" "-v $STATE_ROOT:$STATE_ROOT" "$CLAB_IMAGE containerlab version"; do
+got=$(LABS=/srv/my-labs; docker() { printf '%s ' "$@"; }; PATH=/nonexistent; clab version)
+for want in "--pull never" "-v /srv/my-labs:/srv/my-labs" "$CLAB_IMAGE containerlab version"; do
   [[ $got == *"$want"* ]] && continue
   printf 'FAIL clab(): [%s] missing from: %s\n' "$want" "$got"
   fails=$((fails + 1))

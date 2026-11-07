@@ -34,10 +34,11 @@ What this does not cover:
 
 ## What the install script does
 
-Apart from setting up Docker (below), it uses `sudo` for three things only:
+Apart from setting up Docker (below), it uses `sudo` for these things only:
 
 - installing the helper, the admin script and the SSH wrapper (`clab-mcp-ssh`) under `/usr/local/libexec`;
-- creating `/var/lib/containerlab-mcp/labs`, owned by your user. Lab definitions, generated configs and lab metadata live there;
+- creating the lab folder you chose (default `~/labs`) when it cannot create it as you, and moving existing labs into it when you change folders (Containerlab leaves root-owned files in each lab). The folder is owned by your user, and lab definitions, generated configs and lab metadata live there;
+- recording that folder in `/etc/containerlab-mcp/labs-dir`, owned by root, so neither the server nor a lab can point the helper elsewhere;
 - creating `/etc/containerlab-mcp/images`, owned by root: the list of extra images. An existing list is kept.
 
 Before that it builds the FRR lab image from `remote/frr/` and the Linux host image from `remote/host/`, pulling the public base images if they are missing. The tag and FRR release both come from `FRR_IMAGE` in `clab-mcp-remote`, so that is the one place to change the version. When Containerlab is not installed, it also pulls the Containerlab image named by `CLAB_IMAGE` there.
