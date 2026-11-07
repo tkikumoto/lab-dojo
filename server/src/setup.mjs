@@ -3,7 +3,7 @@
 import { remote, RemoteRefusal, sshTarget } from "./remote.mjs";
 
 /** Must equal HELPER_VERSION in remote/clab-mcp-remote. */
-export const HELPER_VERSION = 6;
+export const HELPER_VERSION = 7;
 
 const installSteps = (target) => [
   "Run from the lab-dojo folder:",
