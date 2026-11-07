@@ -15,7 +15,7 @@ export LC_ALL=C
 
 # Raise this whenever an action or its output changes. The MCP server compares
 # it with its own number, so an install that was not rerun is noticed.
-HELPER_VERSION=4
+HELPER_VERSION=6
 STATE_ROOT=/var/lib/containerlab-mcp
 LABS="$STATE_ROOT/labs"
 # Built by install-remote.sh from remote/frr (stock FRR plus lab-start and lab-netdev-sync).
@@ -212,6 +212,114 @@ check_line() {
   done
 }
 
+# A host node has no router CLI, only a shell, so it gets no free-form commands.
+# check_host_line accepts exact forms of ip, ethtool and cat /proc/net/bonding,
+# on link interfaces and the bond, VLAN and dummy devices built on them, never
+# on the management interface eth0. host_net runs the words without a shell.
+HOST_LINK_RE='^eth[1-9][0-9]?$'
+HOST_BOND_RE='^bond[0-9]{1,2}$'
+HOST_DUMMY_RE='^dummy[0-9]{1,2}$'
+
+host_vlan_ok() {
+  [[ $1 =~ ^(eth[1-9][0-9]?|bond[0-9]{1,2})\.([0-9]{1,4})$ ]] && valid_uint "${BASH_REMATCH[2]}" 1 4094
+}
+host_virt_ok() { [[ $1 =~ $HOST_BOND_RE || $1 =~ $HOST_DUMMY_RE ]] || host_vlan_ok "$1"; }
+host_if_ok() { [[ $1 =~ $HOST_LINK_RE ]] || host_virt_ok "$1"; }
+host_cidr_ok() {
+  local addr=${1%/*} max=32
+  [[ $1 == */* ]] && valid_ip_literal "$addr" || return 1
+  [[ $addr != *:* ]] || max=128
+  valid_uint "${1##*/}" 0 "$max"
+}
+
+# Bond options as <key> <value> pairs, from word $1 of the caller's w.
+host_bond_opts() {
+  local i=$1 v
+  while ((i < ${#w[@]})); do
+    v=${w[i + 1]:-}
+    case ${w[i]} in
+      mode) [[ $v =~ ^(802\.3ad|active-backup|balance-(rr|xor|tlb|alb)|broadcast)$ ]] ;;
+      lacp_rate) [[ $v == slow || $v == fast ]] ;;
+      xmit_hash_policy) [[ $v =~ ^(layer2|layer2\+3|layer3\+4|encap2\+3|encap3\+4)$ ]] ;;
+      ad_select) [[ $v =~ ^(stable|bandwidth|count)$ ]] ;;
+      miimon | updelay | downdelay) valid_uint "$v" 0 60000 ;;
+      min_links) valid_uint "$v" 0 64 ;;
+      *) false ;;
+    esac || return 1
+    i=$((i + 2))
+  done
+}
+
+host_ip_ok() {
+  local i=1 j s dev
+  while [[ ${w[i]:-} =~ ^-(br|brief|s|d|4|6|j|p)$ ]]; do i=$((i + 1)); done
+  s=${w[*]:i}
+  # Read: ip [flags] link|addr|address|route|neigh [show] [[dev] <if>]
+  if [[ $s =~ ^(link|addr|address|route|neigh)( show)?(( dev)? ([a-z0-9.]+))?$ ]]; then
+    [[ -z ${BASH_REMATCH[5]} ]] || host_if_ok "${BASH_REMATCH[5]}"
+    return
+  fi
+  ((i == 1)) || return 1 # flags only on reads
+  if [[ $s == 'link add link '* ]]; then
+    ((${#w[@]} == 11)) && [[ ${w[4]} =~ $HOST_LINK_RE || ${w[4]} =~ $HOST_BOND_RE ]] &&
+      [[ ${w[5]} == name && ${w[6]} == "${w[4]}.${w[10]}" && "${w[*]:7:3}" == 'type vlan id' ]] &&
+      host_vlan_ok "${w[6]}"
+  elif [[ $s == 'link add '*' type bond'* ]]; then
+    [[ ${w[3]} =~ $HOST_BOND_RE && ${w[4]} == type && ${w[5]} == bond ]] && host_bond_opts 6
+  elif [[ $s =~ ^link\ add\ ([a-z0-9]+)\ type\ dummy$ ]]; then
+    [[ ${BASH_REMATCH[1]} =~ $HOST_DUMMY_RE ]]
+  elif [[ $s =~ ^link\ (del|delete)(\ dev)?\ ([a-z0-9.]+)$ ]]; then
+    host_virt_ok "${BASH_REMATCH[3]}"
+  elif [[ $s == 'link set '* ]]; then
+    j=3
+    [[ ${w[j]:-} != dev ]] || j=4
+    dev=${w[j]:-}
+    j=$((j + 1))
+    host_if_ok "$dev" && ((j < ${#w[@]})) || return 1
+    if [[ ${w[j]} == type ]]; then
+      [[ $dev =~ $HOST_BOND_RE && ${w[j + 1]:-} == bond ]] && host_bond_opts $((j + 2))
+      return
+    fi
+    while ((j < ${#w[@]})); do
+      case ${w[j]} in
+        up | down | nomaster) j=$((j + 1)) ;;
+        mtu) valid_uint "${w[j + 1]:-}" 68 9216 || return 1; j=$((j + 2)) ;;
+        master) [[ ${w[j + 1]:-} =~ $HOST_BOND_RE ]] || return 1; j=$((j + 2)) ;;
+        *) return 1 ;;
+      esac
+    done
+  elif [[ $s =~ ^(addr|address)\ (add|del|delete)\ ([0-9A-Fa-f:./]+)\ dev\ ([a-z0-9.]+)$ ]]; then
+    dev=${BASH_REMATCH[4]} # the checks below run regexes of their own
+    host_cidr_ok "${BASH_REMATCH[3]}" && host_if_ok "$dev"
+  elif [[ $s =~ ^(addr|address|neigh)\ flush\ dev\ ([a-z0-9.]+)$ ]]; then
+    host_if_ok "${BASH_REMATCH[2]}"
+  elif [[ $s =~ ^route\ (add|del|delete|replace)\ ([0-9A-Fa-f:./]+|default)(\ via\ ([0-9A-Fa-f:.]+))?(\ dev\ ([a-z0-9.]+))?$ ]]; then
+    local dest=${BASH_REMATCH[2]} via=${BASH_REMATCH[4]} rdev=${BASH_REMATCH[6]}
+    [[ -n $via || -n $rdev ]] || return 1
+    [[ $dest == default ]] || host_cidr_ok "$dest" || return 1
+    [[ -z $via ]] || valid_ip_literal "$via" || return 1
+    [[ -z $rdev ]] || host_if_ok "$rdev"
+  else
+    return 1
+  fi
+}
+
+check_host_line() {
+  local line=$1 re='^[A-Za-z0-9 ./:_+-]*$'
+  local -a w
+  ((${#line} <= 200)) || die 'command longer than 200 characters'
+  [[ $line =~ $re ]] || die "forbidden character in: $line"
+  read -r -a w <<< "$line"
+  case ${w[0]:-} in
+    cat) ((${#w[@]} == 2)) && [[ ${w[1]} =~ ^/proc/net/bonding/bond[0-9]{1,2}$ ]] && return 0 ;;
+    ethtool)
+      { ((${#w[@]} == 2)) && host_if_ok "${w[1]}"; } ||
+        { ((${#w[@]} == 3)) && [[ ${w[1]} == -S || ${w[1]} == -i ]] && host_if_ok "${w[2]}"; } && return 0 ;;
+    ip) host_ip_ok && return 0 ;;
+  esac
+  die "not an allowed host command: $line"
+}
+
 json_string_list() {
   local first=1 item
   printf '['
@@ -395,6 +503,9 @@ inspect_lab() {
 # value means missing. Read-only.
 doctor() {
   printf 'helper_version=%s\n' "$HELPER_VERSION"
+  # sshd sets SSH_ORIGINAL_COMMAND only for a key with a forced command (clab-mcp-ssh).
+  printf 'ssh_access=%s\n' "$([[ -n ${SSH_ORIGINAL_COMMAND:-} ]] && printf restricted || printf full)"
+  printf 'orbstack=%s\n' "$([[ $(uname -r) == *orbstack* ]] && printf yes || printf no)"
   printf 'docker=%s\n' "$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
   printf 'containerlab=%s\n' "$(clab version 2>/dev/null | sed -n 's/^ *version: *//p' || true)"
   printf 'containerlab_runs_as=%s\n' "$(type -P clab >/dev/null && printf installed || printf 'container %s' "$CLAB_IMAGE")"
@@ -642,6 +753,38 @@ traceroute_node() {
   docker exec "$CONTAINER" traceroute "${args[@]}" "$3" 2>&1 || true
 }
 
+# Runs checked network commands on a host node, in order, stopping at the first
+# failure. Every line is checked before any runs.
+host_net() {
+  require_lab "${1:-}"
+  require_node "${2:-}"
+  [[ $KIND == host ]] || die "$NODE is a router: use show and configure for it"
+  local input line out rc
+  local -a lines=() words
+  input=$(read_stdin 8192)
+  while IFS= read -r line; do
+    line=${line%$'\r'}
+    [[ -n ${line//[[:space:]]/} ]] || continue
+    check_host_line "$line"
+    lines+=("$line")
+  done <<< "$input"
+  ((${#lines[@]} >= 1 && ${#lines[@]} <= 50)) || die 'give 1-50 commands'
+  require_running
+  for line in "${lines[@]}"; do
+    read -r -a words <<< "$line"
+    printf '$ %s\n' "$line"
+    rc=0
+    out=$(docker exec "$CONTAINER" "${words[@]}" 2>&1) || rc=$?
+    [[ -z $out ]] || printf '%s\n' "$out"
+    if ((rc)); then
+      [[ $out != *'Unknown device type'* ]] ||
+        printf 'note: the lab host kernel has not loaded this device type; a person with sudo on the lab host can load it, e.g. sudo modprobe bonding (or 8021q, dummy)\n'
+      printf '(exit %s; the remaining commands were not run)\n' "$rc"
+      return 0
+    fi
+  done
+}
+
 # Sourced (by tests/check-line.sh): define the functions, run nothing.
 [[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
 
@@ -670,5 +813,6 @@ case "$action" in
   ping) (($# == 4 || $# == 5)) || die 'invalid arguments'; ping_node "$@" ;;
   ping-sweep) (($# >= 4)) || die 'invalid arguments'; ping_sweep "$@" ;;
   traceroute) (($# == 3 || $# == 4)) || die 'invalid arguments'; traceroute_node "$@" ;;
+  host-net) (($# == 2)) || die 'invalid arguments'; host_net "$1" "$2" ;;
   *) die 'invalid action' ;;
 esac

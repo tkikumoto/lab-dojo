@@ -14,7 +14,7 @@ node --test --test-name-pattern="checklist" tests/server.test.mjs   # one test
 ```
 
 - `tests/server.test.mjs` is pure logic and never touches a lab host.
-- `tests/check-line.sh` (run by `tests/check-line.test.mjs`) tests the helper's config-line filter and needs bash 4+. macOS ships bash 3.2, so there it reruns itself on the lab host over SSH and fails unless `CONTAINERLAB_SSH_TARGET` is set, e.g. `CONTAINERLAB_SSH_TARGET=<user>@<host> npm test`. The lab host must see this folder at the same path (OrbStack does). It is skipped on Windows.
+- `tests/check-line.sh` (run by `tests/check-line.test.mjs`) tests the helper's config-line filter and needs bash 4+. macOS ships bash 3.2, so there it reruns itself on the lab host over SSH and fails unless `CONTAINERLAB_SSH_TARGET` is set, e.g. `CONTAINERLAB_SSH_TARGET=<user>@<host> npm test`. The lab host must see this folder at the same path (OrbStack does). It is skipped on Windows. It needs a shell over SSH, so use your own key, not a restricted lab-dojo key.
 - After changing server code, the MCP client must reconnect (`/mcp` in Claude Code) to load it.
 
 ## Architecture
@@ -36,9 +36,10 @@ Server modules, in the order a request flows:
 - `setup.mjs` backs `check_setup`: it parses the helper's `doctor` facts and returns ordered checks, each failure with a `fix` command for the user to run.
 
 On the lab host:
-- `remote/install-remote.sh` (run by the user) installs the helper and `clab-mcp-admin`, builds the FRR and host images, and pulls the Containerlab image when `clab` is not installed. It reads the image tags `FRR_IMAGE`, `HOST_IMAGE` and `CLAB_IMAGE` from `clab-mcp-remote`, so the helper is the one place to change them.
+- `remote/install-remote.sh` (run by the user) installs Docker when it is missing (Docker's get.docker.com script) and adds the account to the `docker` group, then installs the helper, `clab-mcp-admin` and `clab-mcp-ssh`, builds the FRR and host images, and pulls the Containerlab image when `clab` is not installed. It reads the image tags `FRR_IMAGE`, `HOST_IMAGE` and `CLAB_IMAGE` from `clab-mcp-remote`, so the helper is the one place to change them.
 - The helper's `clab()` function uses an installed `clab`, or else runs `CLAB_IMAGE` as a sibling container with the lab folder mounted at the same path.
 - `remote/frr/` adds `lab-start` (kernel settings) and `lab-netdev-sync` (Python; creates the VRRP macvlans, subinterfaces and dummies that FRR config implies) to the stock FRR image.
+- `remote/clab-mcp-ssh` is the forced command for a lab-dojo-only SSH key (`command="...",restrict` in `authorized_keys`): it splits `SSH_ORIGINAL_COMMAND`, which must be the helper's path and single-quoted arguments as `remote.mjs` sends them, without a shell and runs the helper. Keep it bash 3.2 compatible; `tests/ssh-wrapper.test.mjs` sources it. The helper's `doctor` reports `ssh_access=restricted` when reached this way.
 - `remote/clab-mcp-admin` is for a person with sudo only (registering extra images in the root-owned `/etc/containerlab-mcp/images`); the server never calls it.
 
 ## Rules for changes

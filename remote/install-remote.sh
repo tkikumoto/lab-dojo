@@ -11,6 +11,16 @@ STATE_ROOT=/var/lib/containerlab-mcp
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 OWNER="$(id -un)"
 
+# A fresh lab host may have no Docker: install it with Docker's own script
+# (Debian, Ubuntu, Fedora, RHEL family), then give this account access. The new
+# group only applies to a new login, so rerun this script once under `sg docker`.
+type -P docker >/dev/null || curl -fsSL https://get.docker.com | sudo sh
+if ! docker info >/dev/null 2>&1; then
+  [[ -z ${LAB_DOJO_REGROUPED:-} ]] || { echo "Docker is installed but $OWNER still cannot use it. Is it running? sudo systemctl status docker" >&2; exit 1; }
+  sudo usermod -aG docker "$OWNER"
+  exec sg docker -c "LAB_DOJO_REGROUPED=1 bash $(printf %q "$SCRIPT_DIR/install-remote.sh")"
+fi
+
 # The helper names the FRR image it deploys. Build exactly that one, on the
 # matching FRR release, before the helper that depends on it is installed.
 FRR_IMAGE="$(sed -n 's/^FRR_IMAGE=//p' "$SCRIPT_DIR/clab-mcp-remote")"
@@ -35,6 +45,8 @@ fi
 sudo install -d -m 0755 /usr/local/libexec
 sudo install -m 0755 "$SCRIPT_DIR/clab-mcp-remote" /usr/local/libexec/clab-mcp-remote
 sudo install -m 0755 "$SCRIPT_DIR/clab-mcp-admin" /usr/local/libexec/clab-mcp-admin
+# Forced command for a lab-dojo-only SSH key; root-owned, so that key cannot change it.
+sudo install -m 0755 "$SCRIPT_DIR/clab-mcp-ssh" /usr/local/libexec/clab-mcp-ssh
 sudo install -d -m 0755 -o "$OWNER" -g "$(id -gn)" "$STATE_ROOT" "$STATE_ROOT/labs"
 sudo install -d -m 0755 /etc/containerlab-mcp
 [[ -e /etc/containerlab-mcp/images ]] || sudo install -m 0644 /dev/null /etc/containerlab-mcp/images
@@ -42,5 +54,6 @@ sudo install -d -m 0755 /etc/containerlab-mcp
 echo "Installed allowlisted Containerlab MCP helper at /usr/local/libexec/clab-mcp-remote"
 echo "Built FRR lab image $FRR_IMAGE and host image $HOST_IMAGE"
 echo "$CLAB_NOTE"
+echo "Recommended: give lab-dojo its own SSH key that can only run the helper. check_setup (/mcp__<server>__init) shows the steps."
 echo "Extra images: sudo /usr/local/libexec/clab-mcp-admin add-image <name> <image-ref>"
 echo "Lab definitions live in $STATE_ROOT/labs (owner: $OWNER)"

@@ -21,10 +21,10 @@ Claude Code -> lab-dojo server  --SSH-->    helper -> Docker + Containerlab -> l
 
 **On the lab host:**
 
-- Linux with Docker. Your account must run `docker ps` without `sudo` (add it to the `docker` group).
+- Linux with Docker. Your account must run `docker ps` without `sudo` (add it to the `docker` group). Without Docker, the install sets it up with Docker's own script (Debian, Ubuntu, Fedora or the RHEL family) and adds your account to the `docker` group.
 - `sudo` rights, once, for the install.
 - Containerlab is optional. Without it, lab-dojo runs Containerlab from its official image.
-- Arista cEOS is optional. It needs an Arista sign-in, so you import it yourself: download cEOS-lab from arista.com, copy it to the lab host, and run `docker import cEOS64-lab-<version>.tar.xz ceos:<version>`. Without it, every FRR lab and exercise still works.
+- Arista cEOS is optional. It needs an Arista sign-in, so you import it yourself: download cEOS-lab from arista.com in the build for the lab host's CPU (amd64 or arm64; `uname -m` on the lab host says `x86_64` or `aarch64`), copy it to the lab host, and run `docker import <downloaded file>.tar.xz ceos:<version>`. Without it, every FRR lab and exercise still works.
 
 **Between the two:**
 
@@ -51,6 +51,8 @@ Claude Code -> lab-dojo server  --SSH-->    helper -> Docker + Containerlab -> l
    This installs the helper, builds the FRR and Linux host images, and pulls the Containerlab image if Containerlab is not installed.
 
 3. **Run `/mcp__lab-dojo__init` again.** When every check passes, you are ready.
+
+4. **Recommended: give lab-dojo its own SSH key** that can only run the helper. `init` shows the steps under "Restricted SSH key". Without it, lab-dojo's key, which is your own, opens a full shell on the lab host, and so does Claude's Bash tool. See [Security](docs/security.md#a-key-that-can-only-run-the-helper).
 
 `init` only checks; it never installs anything itself. It tells you when SSH or Docker is the problem, but you fix those yourself. After you update lab-dojo, reconnect the server (`/mcp` in Claude Code) and run `init` again: it tells you when the lab host needs the install again.
 

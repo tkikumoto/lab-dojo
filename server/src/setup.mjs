@@ -3,7 +3,7 @@
 import { remote, RemoteRefusal, sshTarget } from "./remote.mjs";
 
 /** Must equal HELPER_VERSION in remote/clab-mcp-remote. */
-export const HELPER_VERSION = 4;
+export const HELPER_VERSION = 6;
 
 const installSteps = (target) => [
   "Run from the lab-dojo folder:",
@@ -12,7 +12,21 @@ const installSteps = (target) => [
 ].join("\n");
 
 const CEOS_STEPS = "Arista images need a sign-in, so no command can pull one. Download cEOS-lab from arista.com, "
-  + "copy the file to the lab host and run there: docker import cEOS64-lab-<version>.tar.xz ceos:<version>";
+  + "picking the build for the lab host's CPU (`uname -m` there: x86_64 means amd64, aarch64 means arm64), "
+  + "copy the file to the lab host and run there: docker import <downloaded file>.tar.xz ceos:<version>";
+
+// A key that can only run the helper (clab-mcp-ssh as its forced command), so
+// whoever holds it gets no shell on the lab host. All steps are the user's.
+const restrictedKeySteps = (target) => [
+  "1. On this machine, make a key for lab-dojo only. It needs no passphrase: it will only be able to run the helper.",
+  "ssh-keygen -t ed25519 -N '' -C lab-dojo -f ~/.ssh/lab-dojo",
+  "2. Allow it on the lab host, locked to the helper (this uses your current key once):",
+  // The leading echo starts a new line, in case the file does not end with one.
+  `(echo; echo "command=\\"/usr/local/libexec/clab-mcp-ssh\\",restrict $(cat ~/.ssh/lab-dojo.pub)") | ssh ${target} 'cat >> ~/.ssh/authorized_keys'`,
+  "3. Add to ~/.ssh/config on this machine:",
+  "Host lab-dojo-<name>\n  HostName <lab host address>\n  User <your user there>\n  IdentityFile ~/.ssh/lab-dojo\n  IdentitiesOnly yes",
+  "4. Set CONTAINERLAB_SSH_TARGET=lab-dojo-<name> in this server's MCP configuration and reconnect it. `ssh lab-dojo-<name> true` must now be refused.",
+].join("\n");
 
 // For the user to run on the lab host; the server never runs it. It pulls a public
 // image and registers it under a short name that a host node can then use.
@@ -65,7 +79,7 @@ export function setupReport(target, facts, failure) {
   add("Helper on the lab host", true, version);
 
   add("Docker", Boolean(facts.docker), facts.docker || "not usable",
-    "Your account on the lab host must be able to run `docker` without sudo.");
+    `Your account on the lab host must be able to run \`docker\` without sudo. The install sets that up, installing Docker if it is missing:\n${installSteps(target)}`);
   // Containerlab is either installed, or run from its image as a container next to the labs.
   const image = facts.containerlab_runs_as?.match(/^container (.+)/)?.[1];
   add("Containerlab", Boolean(facts.containerlab),
@@ -76,6 +90,19 @@ export function setupReport(target, facts, failure) {
   add("Lab storage", facts.lab_storage === "ok", facts.lab_storage === "ok" ? "writable" : "missing", installSteps(target));
   add("FRR router image", Boolean(facts.frr_image), facts.frr_image || "not built", installSteps(target));
   add("Linux host image", Boolean(facts.host_image), facts.host_image || "not built", installSteps(target));
+  const restricted = facts.ssh_access === "restricted";
+  const orbstack = facts.orbstack === "yes";
+  checks.push({
+    check: "Restricted SSH key (recommended)",
+    ok: restricted,
+    optional: true,
+    detail: restricted
+      ? "this server's key can only run the helper"
+      : orbstack
+        ? "not possible here: OrbStack gives your Mac user root on its machines without any key, so treat this lab host as disposable"
+        : "this server's key opens a full shell on the lab host",
+    ...(restricted || orbstack ? {} : { fix: restrictedKeySteps(target) }),
+  });
   checks.push({
     check: "Arista cEOS image (optional)",
     ok: Boolean(facts.ceos_image),

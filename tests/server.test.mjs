@@ -126,6 +126,11 @@ test("check_setup stops at the first blocking problem and names the fix", () => 
   const ok = setupReport("me@vm", facts);
   assert.equal(ok.ready, true);
   assert.deepEqual(failed(ok), []);
+  // A key locked to the helper is recommended, never required; an OrbStack machine cannot have one.
+  const key = (f) => setupReport("me@vm", { ...facts, ...f }).checks.find((c) => c.check.startsWith("Restricted SSH key"));
+  assert.match(key({ ssh_access: "full" }).fix, /clab-mcp-ssh\\",restrict[^]*\| ssh me@vm 'cat >> ~\/\.ssh\/authorized_keys'[^]*IdentitiesOnly yes/);
+  assert.equal(key({ ssh_access: "restricted" }).ok, true);
+  assert.equal(key({ ssh_access: "full", orbstack: "yes" }).fix, undefined);
   assert.match(ok.checks.at(-1).fix, /docker import/);
   assert.deepEqual(ok.can_build, ["routed labs and exercises with FRR routers", "Linux host nodes (Alpine with network tools)"]);
   assert.equal(ok.not_available.length, 1);
