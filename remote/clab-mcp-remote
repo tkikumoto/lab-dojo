@@ -15,9 +15,12 @@ export LC_ALL=C
 
 # Raise this whenever an action or its output changes. The MCP server compares
 # it with its own number, so an install that was not rerun is noticed.
-HELPER_VERSION=7
-STATE_ROOT=/var/lib/containerlab-mcp
-LABS="$STATE_ROOT/labs"
+HELPER_VERSION=8
+# Lab definitions live in the folder install-remote.sh recorded (default
+# ~/labs). The file is root-owned, so neither the server nor a lab can move it.
+LABS_DIR_FILE=/etc/containerlab-mcp/labs-dir
+LABS_DIR_RE='^(/[A-Za-z0-9_][A-Za-z0-9._-]*)+$'
+LABS=$(head -n 1 "$LABS_DIR_FILE" 2>/dev/null || true)
 # Built by install-remote.sh from remote/frr (stock FRR plus lab-start and lab-netdev-sync).
 FRR_IMAGE=lab-dojo/frr:10.7.1
 # Built by install-remote.sh from remote/host: Alpine Linux with network tools.
@@ -64,7 +67,7 @@ die() {
 # short-lived container. That container drives the host's Docker, so the lab
 # routers are its siblings, not its children. The mounts are the ones the
 # Containerlab docs prescribe. Containerlab passes lab file paths to the host's
-# Docker, so $STATE_ROOT is mounted at the same path.
+# Docker, so $LABS is mounted at the same path.
 clab() {
   if type -P clab >/dev/null; then
     command clab "$@"
@@ -75,7 +78,7 @@ clab() {
     -v /var/run/netns:/var/run/netns \
     -v /var/lib/docker/containers:/var/lib/docker/containers \
     -v /etc/hosts:/etc/hosts \
-    -v "$STATE_ROOT:$STATE_ROOT" -w "$PWD" \
+    -v "$LABS:$LABS" -w "$PWD" \
     "$CLAB_IMAGE" containerlab "$@"
 }
 
@@ -526,7 +529,8 @@ doctor() {
   printf 'docker=%s\n' "$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
   printf 'containerlab=%s\n' "$(clab version 2>/dev/null | sed -n 's/^ *version: *//p' || true)"
   printf 'containerlab_runs_as=%s\n' "$(type -P clab >/dev/null && printf installed || printf 'container %s' "$CLAB_IMAGE")"
-  printf 'lab_storage=%s\n' "$([[ -d $LABS && -w $LABS ]] && printf ok || true)"
+  printf 'labs_dir=%s\n' "$LABS"
+  printf 'lab_storage=%s\n' "$([[ $LABS =~ $LABS_DIR_RE && -d $LABS && -w $LABS ]] && printf ok || true)"
   printf 'labs_defined=%s\n' "$(find "$LABS" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null | wc -l)"
   printf 'labs_max=%s\n' "$MAX_LABS"
   printf 'memory_available_mb=%s\n' "$(awk '/^MemAvailable/ {print int($2 / 1024)}' /proc/meminfo)"
@@ -807,6 +811,7 @@ host_net() {
 
 action=${1:-}
 (($# > 0)) && shift
+[[ $LABS =~ $LABS_DIR_RE || $action == doctor ]] || die "no valid lab folder in $LABS_DIR_FILE; run install-remote.sh"
 case "$action" in
   doctor) (($# == 0)) || die 'invalid arguments'; doctor ;;
   list-labs) (($# == 0)) || die 'invalid arguments'; list_labs ;;

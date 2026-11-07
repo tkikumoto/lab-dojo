@@ -105,7 +105,7 @@ test("an addressed lab still renders addresses and routed cEOS ports", () => {
 
 test("check_setup stops at the first blocking problem and names the fix", () => {
   const facts = parseFacts([
-    `helper_version=${HELPER_VERSION}`, "docker=28.5.2", "containerlab=0.80.0", "lab_storage=ok", "labs_defined=2", "labs_max=6",
+    `helper_version=${HELPER_VERSION}`, "docker=28.5.2", "containerlab=0.80.0", "labs_dir=/home/me/labs", "lab_storage=ok", "labs_defined=2", "labs_max=6",
     "memory_available_mb=10641", "frr_image=lab-dojo/frr:10.7.1", "ceos_image=", "host_image=lab-dojo/host:1",
     "extra_images=web=nginx:alpine,dns=coredns/coredns:1.12(missing),",
   ].join("\n"));
@@ -145,6 +145,11 @@ test("check_setup stops at the first blocking problem and names the fix", () => 
   // Extra images come from the root-owned list on the lab host; the command to add one is for the user to run.
   assert.deepEqual(ok.extra_images, ["web=nginx:alpine", "dns=coredns/coredns:1.12(missing)"]);
   assert.match(ok.add_image_command, /^sudo .*clab-mcp-admin add-image <name> <image-ref>$/);
+  // The lab folder is chosen at install time; the report says where it is and how to move it.
+  assert.equal(ok.labs_dir, "/home/me/labs");
+  assert.equal(ok.checks.find((c) => c.check === "Lab storage").detail, "/home/me/labs, writable");
+  assert.match(ok.labs_dir_command, /bash \.\/install-remote\.sh <folder>"$/);
+  assert.match(missing.checks.at(-1).fix, /install-remote\.sh"$/);
 });
 
 test("the helper and the server agree on the helper version", () => {

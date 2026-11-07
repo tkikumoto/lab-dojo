@@ -48,7 +48,7 @@ Claude Code -> lab-dojo server  --SSH-->    helper -> Docker + Containerlab -> l
    ssh <user>@<host> "cd /tmp/containerlab-mcp-remote && bash ./install-remote.sh"
    ```
 
-   This installs the helper, builds the FRR and Linux host images, and pulls the Containerlab image if Containerlab is not installed.
+   This installs the helper, builds the FRR and Linux host images, and pulls the Containerlab image if Containerlab is not installed. `init` first asks where your labs should live on the lab host (default `~/labs`) and adds that folder to the end of the install command. To move your labs later, rerun the install with a new, empty folder; it refuses while a lab is deployed.
 
 3. **Run `/mcp__lab-dojo__init` again.** When every check passes, you are ready.
 
