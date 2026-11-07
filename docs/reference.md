@@ -15,6 +15,7 @@ Details behind the [README](../README.md): the tools, how labs are built, and ho
 | | `list_nodes` | Container state, management IP, CLI command, loopback, and each link interface with the neighbour interface it faces |
 | 2 Device | `exec_cli` | Read-only `show` on one node or `all`, optional JSON, regex `include` filter |
 | | `configure_device` | Apply config lines (guarded); returns device output + diff vs startup |
+| | `host_command` | On a host node: allowlisted `ip` and `ethtool` commands (addresses, routes, bonds/LACP, VLAN subinterfaces, link state) |
 | | `get_running_config` | Full config or just matching sections |
 | | `get_interfaces` / `get_routes` / `get_bgp` / `get_ospf` | Vendor-neutral JSON for FRR and EOS alike |
 | | `ping` / `traceroute` | Destinations/sources may be node names (= loopbacks) |
@@ -41,9 +42,10 @@ Run the commands on the lab host, after `ssh <user>@<host>`. `list_nodes` return
 
 A `host` node is a Linux machine: Alpine with `bash`, `ip`, `ping`, `traceroute`, `mtr`, `tcpdump`, `dig`, `curl` and `iperf3`. It is not a router:
 
-- It gets no generated addresses and no startup configuration. You configure it by hand, e.g. `docker exec -it clab-<lab>-host1 bash`, then `ip addr add ...`. What you set is gone after a redeploy.
+- It gets no generated addresses and no startup configuration. You configure it by hand, e.g. `docker exec -it clab-<lab>-host1 bash`, then `ip addr add ...`, or Claude does with `host_command`. What you set is gone after a redeploy, and `reset_exercise` leaves it alone.
+- `host_command` runs only exact forms of `ip` (link, addr, route, neigh; bond, VLAN and dummy devices), `ethtool` and `cat /proc/net/bonding/bondN`, never on `eth0` and never through a shell. An LACP bond needs the `bonding` module in the lab host's kernel; if creating one fails with `Unknown device type`, run `sudo modprobe bonding` on the lab host.
 - On a link between a router and a host, the router's end keeps its generated address, so the gateway is ready.
-- Router tools (`exec_cli`, `configure_device`, `get_routes` and so on) refuse a host. `ping` and `traceroute` from a host work.
+- Router tools (`exec_cli`, `configure_device`, `get_routes` and so on) refuse a host, and `host_command` refuses a router. `ping` and `traceroute` from a host work.
 - Health checks expect nothing of a host: no adjacency, no ping. A link to a host is judged from the router's end. Faults never land on a host or on a link towards one.
 
 A host node can run another image instead, by name. Register a public image on the lab host first:

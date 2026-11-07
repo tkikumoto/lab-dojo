@@ -28,7 +28,7 @@ const server = new McpServer(
       "Lab nodes run privileged, so you never add an image to the lab host: when one is missing, give the user the command from check_setup to run themselves, or say that it cannot be pulled (images behind a sign-in) or is not supported (router systems other than FRR and cEOS).",
       "Assume no lab is running: call list_labs first. Before create_topology, ask the user about anything the request leaves open (node count, how nodes connect, frr or ceos, what is pre-configured, lab name), show the plan and wait for their go-ahead; never guess silently. 'I will do the routing' or 'just the connections' means routing `bare`. Layer 2 topics such as STP need ceos nodes and `bare`.",
       "Exercises are in tutor mode: a human learner troubleshoots. Anything under `tutor_only` must not be revealed to the learner unless they give up.",
-      "Ask for explicit confirmation before destroy_topology. You reach router CLIs only through these tools; shell access is not available to you by design.",
+      "Ask for explicit confirmation before destroy_topology. You reach router CLIs only through these tools; shell access is not available to you by design. On host nodes, host_command runs allowlisted ip and ethtool commands (addresses, routes, bonds/LACP, VLAN subinterfaces, link state).",
       "FRR nodes create the Linux devices their configuration implies within a few seconds: a macvlan per `vrrp <vrid> ip|ipv6 <address>` line, 802.1Q subinterfaces named `<parent>.<vid>`, and `loopback<N>`/`dummy<N>` interfaces. So VRRP, router-on-a-stick and extra loopbacks need only FRR configuration. A link-local IPv6 VRRP address is not installed; use a global one. MPLS/LDP and GRE need kernel support the lab host may lack (an OrbStack VM has neither); say so if a lab using them fails.",
       "Whenever a lab is deployed, show the user the `access` section of the result as a table: every node's management IP, its cli command, and each link interface with the neighbour interface it connects to. list_nodes returns the same details later.",
     ].join(" "),
@@ -278,6 +278,33 @@ tool(
     const output = await remote("configure", [labName, n.name], { input });
     const diff = await remote("config-diff", [labName, n.name]).catch((e) => `diff unavailable: ${e.message}`);
     return json({ node: n.name, kind: n.kind, device_output: output.trim() || "(accepted, no output)", diff_vs_startup: diff.trim() || "(no differences)" });
+  },
+);
+
+tool(
+  "host_command",
+  [
+    "Run network commands on a host node (Linux), one per line, in order; it stops at the first that fails. Only these forms are allowed, on link interfaces eth1+ and the bondN, dummyN and <parent>.<vid> devices built on them, never eth0:",
+    "- read: ip [-br|-s|-d|-4|-6|-j|-p] link|addr|route|neigh [show] [[dev] <if>]; ethtool [-S|-i] <if>; cat /proc/net/bonding/bondN",
+    "- bond: ip link add bondN type bond [mode 802.3ad|active-backup|balance-rr|...] [miimon N] [lacp_rate slow|fast] [xmit_hash_policy layer2|layer2+3|layer3+4] [min_links N]; ip link set [dev] bondN type bond <same options>",
+    "- devices: ip link add link <if> name <if>.<vid> type vlan id <vid>; ip link add dummyN type dummy; ip link del [dev] <bond, vlan or dummy>",
+    "- links: ip link set [dev] <if> [up|down|mtu N|master bondN|nomaster]...",
+    "- addresses and routes: ip addr add|del <ip>/<len> dev <if>; ip addr flush dev <if>; ip route add|del|replace default|<prefix> [via <ip>] [dev <if>]; ip neigh flush dev <if>",
+    "Anything else is refused by the lab host. Changes last until the lab is redeployed; reset_exercise does not touch hosts.",
+  ].join("\n"),
+  {
+    lab,
+    node: nodeName,
+    commands: z.array(z.string()).min(1).max(50)
+      .describe('e.g. ["ip link add bond0 type bond mode 802.3ad", "ip link set eth1 down", "ip link set eth1 master bond0"]'),
+  },
+  CHANGES_LAB,
+  async ({ lab: labName, node, commands }) => {
+    const { node: n } = await context(labName, node);
+    if (n.kind !== "host") throw new Error(`${n.name} is a ${n.kind} router; use exec_cli and configure_device for it`);
+    const bad = commands.find((c) => /[^A-Za-z0-9 ./:_+-]/.test(c));
+    if (bad !== undefined) throw new Error(`forbidden character in: ${bad}`);
+    return text(await remote("host-net", [labName, n.name], { input: commands.map((c) => c.trim()).join("\n") }));
   },
 );
 
@@ -549,7 +576,7 @@ tool(
 // unquoted request arrives as its first word only. CUT_SHORT covers that case.
 const CUT_SHORT = "If that request looks cut short (a single word), the client split it: the whole text I typed after the command is the request.";
 const IMAGE_RULES = [
-  "   - A node is frr, ceos or host. A host is a Linux machine (Alpine with network tools; no generated addresses, I configure it myself). `image` on a host node picks another registered image by name; check_setup lists them under extra_images.",
+  "   - A node is frr, ceos or host. A host is a Linux machine (Alpine with network tools; no generated addresses: I configure it myself, or you do with host_command). `image` on a host node picks another registered image by name; check_setup lists them under extra_images.",
   "   - If the request needs an image the lab host does not have, never add it yourself; stop and tell me which of these applies. A public Linux image: give me the add_image_command from check_setup with the name and image reference filled in, to run on the lab host; when I say it ran, call check_setup again and continue. An image behind a sign-in (Arista cEOS, Cisco and the like): no command can pull it; give the manual steps from check_setup if it has them. A router system lab-dojo has no code for (anything but FRR and cEOS): it is not supported; offer the nearest lab that is.",
 ];
 const BUILD_STEPS = [

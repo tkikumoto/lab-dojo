@@ -18,7 +18,11 @@ expect() {
   local line got
   while IFS= read -r line; do
     got=allowed
-    (check_line "$line" "$2") 2>/dev/null || got=refused
+    if [[ $2 == host ]]; then
+      (check_host_line "$line") 2>/dev/null || got=refused
+    else
+      (check_line "$line" "$2") 2>/dev/null || got=refused
+    fi
     [[ $got == "$1" ]] && continue
     printf 'FAIL (%s): [%s] was %s, expected %s\n' "$2" "$line" "$got" "$1"
     fails=$((fails + 1))
@@ -85,6 +89,67 @@ write memory
 do show running-config
 log file /etc/frr/daemons
 description a & reboot
+EOF
+
+# Host nodes: exact ip/ethtool forms only, never eth0, never a shell.
+expect allowed host <<'EOF'
+ip link
+ip -br link
+ip -d link show bond0
+ip addr show dev eth1
+ip -br -4 addr show eth2.10
+ip route
+ip neigh show
+ethtool eth1
+ethtool -S eth2
+cat /proc/net/bonding/bond0
+ip link add bond0 type bond mode 802.3ad miimon 100 lacp_rate fast xmit_hash_policy layer3+4
+ip link set bond0 type bond lacp_rate slow
+ip link add link bond0 name bond0.10 type vlan id 10
+ip link add dummy0 type dummy
+ip link del bond0.10
+ip link delete dev dummy0
+ip link set eth1 down
+ip link set dev eth1 master bond0
+ip link set eth2 nomaster up
+ip link set bond0 up mtu 9000
+ip addr add 10.0.10.100/24 dev bond0
+ip address del 2001:db8::1/64 dev bond0.10
+ip addr flush dev eth1
+ip route replace default via 10.0.10.1
+ip route add 10.9.0.0/16 via 10.0.10.1 dev bond0
+ip route del 10.9.0.0/16 dev bond0
+ip neigh flush dev bond0
+EOF
+
+expect refused host <<'EOF'
+ip link set eth0 down
+ip addr add 10.0.0.1/24 dev eth0
+ip route add default via 10.0.0.1 dev eth0
+ip link set eth1 netns 1
+ip netns exec x sh
+ip -batch /tmp/x
+ip -force link
+ip link set eth1 xdp obj /tmp/x.o
+ip link add macv0 link eth1 type macvlan
+ip link add br0 type bridge
+ip link del eth1
+ip link add link eth1 name eth1.10 type vlan id 11
+ip link add link eth1 name eth1.5000 type vlan id 5000
+ip link add bond0 type bond mode foo
+ip link set eth1 mtu 99999
+ip link set eth1
+ip addr add 10.0.0.300/24 dev bond0
+ip route add default
+ip -s link set eth1 down
+ip link show $(id)
+ip link set eth1 down; reboot
+ethtool -s eth1 speed 10
+cat /etc/shadow
+cat /proc/net/bonding/../../../etc/shadow
+sh -c id
+bash
+tcpdump -i eth1
 EOF
 
 # clab(): without an installed Containerlab, the pinned image runs, never
