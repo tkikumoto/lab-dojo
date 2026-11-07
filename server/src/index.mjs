@@ -578,7 +578,7 @@ server.registerPrompt(
           "1. Call check_setup and show the result as a table: check, result.",
           "2. For every failed check, show its `fix` in a code block for me to run. Do not run installs or change the lab host yourself. After I say I ran them, call check_setup again.",
           "3. Say plainly what I can build now and what is not available (from can_build and not_available), with the memory left on the lab host.",
-          "4. If everything required passes, suggest a first command, e.g. /mcp__lab-dojo__build_lab \"3 routers in a ring with OSPF\".",
+          "4. If everything required passes, suggest a first command, e.g. /mcp__<server>__build_lab \"3 routers in a ring with OSPF\", with <server> replaced by the server name this init command ran under (lab-dojo unless I registered it under another name).",
         ].join("\n"),
       },
     }],

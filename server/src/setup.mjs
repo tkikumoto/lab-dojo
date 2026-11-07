@@ -12,7 +12,8 @@ const installSteps = (target) => [
 ].join("\n");
 
 const CEOS_STEPS = "Arista images need a sign-in, so no command can pull one. Download cEOS-lab from arista.com, "
-  + "copy the file to the lab host and run there: docker import cEOS64-lab-<version>.tar.xz ceos:<version>";
+  + "picking the build for the lab host's CPU (`uname -m` there: x86_64 means amd64, aarch64 means arm64), "
+  + "copy the file to the lab host and run there: docker import <downloaded file>.tar.xz ceos:<version>";
 
 // For the user to run on the lab host; the server never runs it. It pulls a public
 // image and registers it under a short name that a host node can then use.
