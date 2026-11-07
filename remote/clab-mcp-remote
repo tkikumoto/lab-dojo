@@ -15,7 +15,7 @@ export LC_ALL=C
 
 # Raise this whenever an action or its output changes. The MCP server compares
 # it with its own number, so an install that was not rerun is noticed.
-HELPER_VERSION=6
+HELPER_VERSION=7
 STATE_ROOT=/var/lib/containerlab-mcp
 LABS="$STATE_ROOT/labs"
 # Built by install-remote.sh from remote/frr (stock FRR plus lab-start and lab-netdev-sync).
@@ -479,12 +479,29 @@ deploy() {
     die "deploying would run $((wanted + running)) cEOS nodes; the lab host limit is $MAX_CEOS_RUNNING"
   cd "$LAB_DIR"
   clab deploy -t "$TOPO"
+  forget_host_keys
 }
 
 destroy() {
   require_lab "${1:-}"
+  forget_host_keys
   cd "$LAB_DIR"
   clab destroy -t "$TOPO" --cleanup
+}
+
+# Drop the lab nodes' management IPs from this account's known_hosts. The next
+# lab reuses those IPs with new host keys, so `ssh <mgmt ip>` would otherwise
+# refuse to connect. Containerlab already skips host-key checks for the
+# clab-<lab>-<node> names.
+forget_host_keys() {
+  local ids addr
+  ids=$(docker ps -aq --filter "label=containerlab=$LAB")
+  [[ -n $ids && -f ~/.ssh/known_hosts ]] || return 0
+  # shellcheck disable=SC2086 # one container id per word
+  for addr in $(docker inspect --format \
+    '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{.GlobalIPv6Address}} {{end}}' $ids); do
+    ssh-keygen -R "$addr" >/dev/null 2>&1 || true
+  done
 }
 
 inspect_lab() {
